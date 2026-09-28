@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Animated Worlds — Preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; min-height: 100%; background: #0b0e14; color: #cdd3e0;
+               font: 13px ui-monospace, Menlo, Consolas, monospace; }
+  h1 { font-size: 15px; font-weight: 600; margin: 18px 16px 4px; }
+  p.sub { margin: 0 16px 16px; color: #5a627a; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: 18px; padding: 8px 16px 32px; }
+  .cell { background: #10141d; border: 1px solid #1e2636; border-radius: 12px; padding: 12px;
+          display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .cell canvas { width: 256px; height: 256px; image-rendering: pixelated;
+                 background: repeating-conic-gradient(#12161f 0% 25%, #0d1017 0% 50%) 50%/24px 24px; border-radius: 8px; }
+  .name { font-weight: 600; }
+  .name .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .meta { color: #6b7488; font-size: 11px; }
+  #empty { padding: 40px 16px; color: #e5c07b; }
+</style>
+
+<h1>Animated Worlds — Preview</h1>
+<p class="sub">Only the worlds marked <code>anim</code> in config/worlds.mjs, looping at their configured speed.</p>
+<div id="grid"></div>
+<div id="empty" hidden>No animated worlds found in config/worlds.mjs.</div>
+
+<script type="module">
+  import { WORLDS } from '/config/worlds.mjs';
+
+  const animated = WORLDS.filter((w) => w.anim);
+  const grid = document.getElementById('grid');
+  if (!animated.length) { document.getElementById('empty').hidden = false; }
+
+  const hex = (n) => '#' + n.toString(16).padStart(6, '0');
+
+  // Load one animated world into a canvas and drive it with its own frame clock.
+  async function mount(w) {
+    const cell = document.createElement('div'); cell.className = 'cell';
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 256;
+    const name = document.createElement('div'); name.className = 'name';
+    name.innerHTML = `<span class="sw" style="background:${hex(w.color)}"></span>${w.id}`;
+    const meta = document.createElement('div'); meta.className = 'meta';
+    meta.textContent = `${w.elements} · ${w.anim.fps} fps`;
+    cell.append(cv, name, meta); grid.appendChild(cell);
+
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+
+    // Resolve frames: a spritesheet grid, or individual frame files.
+    const a = w.anim;
+    const img = new Image();
+    if (a.sheet) {
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = a.sheet; });
+      const cols = a.cols || 1, rows = a.rows || 1;
+      const cw = img.width / cols, ch = img.height / rows;
+      const rects = Array.from({ length: a.frames }, (_, i) => [
+        (i % cols) * cw, Math.floor(i / cols) * ch, cw, ch,
+      ]);
+      let f = 0;
+      const draw = () => { const [sx, sy, sw, sh] = rects[f]; ctx.clearRect(0, 0, 256, 256); ctx.drawImage(img, sx, sy, sw, sh, 0, 0, 256, 256); };
+      draw();
+      setInterval(() => { f = (f + 1) % a.frames; draw(); }, 1000 / (a.fps || 6));
+    } else {
+      // frame-file form: /assets/worlds/anim/<id>/frame_NNN.png
+      const imgs = await Promise.all(Array.from({ length: a.frames }, (_, i) => new Promise((res) => {
+        const im = new Image();
+        im.onload = () => res(im); im.onerror = () => res(null);
+        im.src = `/assets/worlds/anim/${w.id}/frame_${String(i).padStart(3, '0')}.png`;
+      })));
+      const frames = imgs.filter(Boolean);
+      let f = 0;
+      const draw = () => { const im = frames[f]; if (!im) return; ctx.clearRect(0, 0, 256, 256); ctx.drawImage(im, 0, 0, 256, 256); };
+      if (frames.length) { draw(); setInterval(() => { f = (f + 1) % frames.length; draw(); }, 1000 / (a.fps || 6)); }
+    }
+  }
+
+  for (const w of animated) mount(w).catch((e) => console.error('preview failed for', w.id, e));
+</script>

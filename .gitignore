@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Captured hook events + runtime logs (data, not source)
+hooks/agent-events.jsonl
+hooks/*.log
+
+# Cygwin/Git-Bash crash dumps (junk)
+*.stackdump
+
+# Personal, machine-local Claude Code settings (never shared)
+.claude/settings.local.json
+**/*.local.json
+
+# Local GIF recordings from browser-automation testing (not source)
+gifs/

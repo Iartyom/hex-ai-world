@@ -1,0 +1,21 @@
+{
+  "name": "slave-ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hex-World Agent Visualizer — live map of Claude Code sessions/agents.",
+  "//type": "intentionally NOT 'module': hooks/hook.js is CommonJS (require); server/scripts use .mjs (always ESM).",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "test": "node --test",
+    "replay": "node scripts/replay.mjs",
+    "install-hooks": "node scripts/install-hooks.mjs",
+    "uninstall-hooks": "node scripts/uninstall-hooks.mjs"
+  },
+  "dependencies": {
+    "@highlightjs/cdn-assets": "^11.12.0",
+    "dompurify": "^3.4.16",
+    "marked": "^18.0.14",
+    "pixi.js": "^8.21.0",
+    "ws": "^8.21.3"
+  }
+}

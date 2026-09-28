@@ -1,0 +1,226 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Hex-World — Agent Map (Phase 2)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0e14; overflow: hidden;
+               font: 12px ui-monospace, Menlo, Consolas, monospace; color: #cdd3e0; }
+  canvas { display: block; }
+  #hud { position: fixed; top: 10px; left: 12px; display: flex; gap: 10px; align-items: center; pointer-events: none; flex-wrap: wrap; }
+  #status { padding: 3px 10px; border-radius: 12px; background: #1a2030; color: #8aa; }
+  #status.live { background: #10351f; color: #7fd69a; }
+  #count { padding: 3px 10px; border-radius: 12px; background: #161b28; color: #9fb0cc; }
+  #hint { color: #5a627a; }
+  #filter { pointer-events: auto; width: 190px; padding: 3px 9px; border-radius: 12px;
+            background: #11151f; border: 1px solid #263042; color: #cdd3e0; outline: none;
+            font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  #filter:focus { border-color: #3a5a86; }
+  #filter::placeholder { color: #55607a; }
+  /* Legend (bottom-left): what the world signals mean. */
+  #legend { position: fixed; bottom: 10px; left: 12px; display: flex; gap: 14px; flex-wrap: wrap;
+            padding: 6px 11px; border-radius: 10px; background: rgba(14,18,28,.82);
+            border: 1px solid #1e2636; color: #9aa4bb; pointer-events: none; }
+  #legend b { color: #cdd3e0; font-weight: 600; }
+  #legend .k { display: inline-flex; align-items: center; gap: 6px; }
+  #legend .sw { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  #debug { position: fixed; top: 40px; left: 12px; right: 12px; bottom: 12px; margin: 0;
+           padding: 10px; background: rgba(10,13,20,.9); border: 1px solid #232a3a; border-radius: 8px;
+           overflow: auto; white-space: pre-wrap; color: #b8c0d4; }
+  /* Connection-lost banner: the board freezes on a dropped socket, so make "stale" impossible to
+     miss. Centered top, amber, hidden until the WS closes and shown until it reconnects. */
+  #offline { position: fixed; top: 0; left: 0; right: 0; z-index: 80; display: none;
+             padding: 7px 12px; text-align: center; font-weight: 600;
+             background: #3a2a10; color: #ffcf7a; border-bottom: 1px solid #6a4d1c;
+             box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  #offline.show { display: block; }
+</style>
+
+<div id="offline">⚠ disconnected from the server — the board is frozen. Reconnecting…</div>
+<div id="hud">
+  <span id="status">connecting…</span>
+  <span id="count">0 sessions</span>
+  <input id="filter" placeholder="filter by folder / title…" autocomplete="off" spellcheck="false" />
+  <span id="hint">press <b>d</b> for raw state · click a world to focus, double-click to reset</span>
+</div>
+<div id="legend">
+  <span class="k"><span class="sw" style="background:#3fd47a"></span> working</span>
+  <span class="k"><span class="sw" style="background:#ffcf4d"></span> needs you</span>
+  <span class="k"><b>⚠</b> stuck</span>
+  <span class="k"><span class="sw" style="background:#27c93f"></span> finished</span>
+  <span class="k"><span class="sw" style="background:#ff5f56"></span> error</span>
+</div>
+<pre id="debug" hidden></pre>
+
+<script type="module">
+  // Phase 2: render the live board with Pixi; keep the GATE-1 raw-state view behind `d`.
+  import { startBoard } from './render.mjs';
+
+  const statusEl = document.getElementById('status');
+  const offlineEl = document.getElementById('offline');
+  const debugEl = document.getElementById('debug');
+  const countEl = document.getElementById('count');
+  const filterEl = document.getElementById('filter');
+  const board = await startBoard();
+
+  // HUD: filter box (feature #6) drives the renderer's world filter; count tracks sessions.
+  filterEl.addEventListener('input', () => board.setFilter(filterEl.value));
+  const setCount = (worlds) => {
+    const n = Object.keys(worlds || {}).length;
+    countEl.textContent = `${n} session${n === 1 ? '' : 's'}`;
+  };
+
+  // Debug panel toggle (retains the Phase-1 text view for verification).
+  let showDebug = false;
+  let lastWorlds = {};
+  addEventListener('keydown', (e) => {
+    if (e.target === filterEl) return; // don't hijack 'd' while typing in the filter box
+    if (e.key === 'd') { showDebug = !showDebug; debugEl.hidden = !showDebug; renderDebug(); }
+  });
+  function renderDebug() {
+    if (!showDebug) return;
+    const lines = Object.entries(lastWorlds).map(([sid, w]) => {
+      const ws = Object.entries(w.workers || {}).map(([a, k]) => `    ${a.slice(0, 8)} ${k.state}${k.lastTool ? ' (' + k.lastTool + ')' : ''}`);
+      return `${sid.slice(0, 8)} [${w.status}] ${w.cwd || ''}\n    main ${w.main.state}\n${ws.join('\n')}`;
+    });
+    debugEl.textContent = lines.join('\n\n') || 'no sessions yet';
+  }
+
+  // Demo mode (?demo): inject fake sessions so the worlds + units are visible without
+  // any live Claude Code hooks. Purely a visual preview; skips the WebSocket.
+  if (new URLSearchParams(location.search).has('demo')) {
+    const demo = {
+      'sess-alpha-01': { status: 'active', title: 'Refactor auth flow', cwd: '/home/user/project-alpha',
+        main: { state: 'working:shell', lastTool: 'Bash', lastCmd: 'npm test -- auth' },
+        workers: { a1: { state: 'working:edit', lastTool: 'Edit', lastCmd: 'src/auth/useAuth.ts' }, a2: { state: 'working:read', lastTool: 'Read', lastCmd: 'src/login.tsx' } } },
+      'sess-bravo-02': { status: 'active', title: 'Add Stripe checkout', cwd: '/home/user/webapp',
+        finishedAt: Date.now(),                              // demo: green "finished" flash on load
+        attention: { reason: 'idle' },                       // demo: soft "waiting for you" glow (idle 60s+)
+        main: { state: 'idle', lastTool: 'Agent' },
+        workers: {} },
+      'sess-charlie-3': { status: 'active', title: 'Debug 500 on /orders', cwd: '/home/user/api-svc',
+        attention: { reason: 'permission', message: 'Claude needs your permission to use Bash' }, // demo: amber "needs you" glow
+        main: { state: 'idle', lastTool: null }, workers: {} },
+      'sess-delta-04': { status: 'active', title: 'Terraform VPC module', cwd: '/home/user/infra',
+        stuck: true, // demo: ⚠ stuck badge
+        main: { state: 'working:tool', lastTool: 'Grep', lastCmd: 'aws_vpc' },
+        workers: { d1: { state: 'working:shell', lastTool: 'PowerShell', lastCmd: 'terraform plan' }, d2: { state: 'idle' }, d3: { state: 'working:edit', lastTool: 'Write', lastCmd: 'modules/vpc/main.tf' } } },
+      'sess-echo-05': { status: 'dormant', title: 'Old migration script', cwd: '/home/user/archived',
+        main: { state: 'idle', lastTool: null }, workers: {} },
+      'sess-foxtrot-6': { status: 'active', title: 'Hex-world unit anims', cwd: '/home/user/game-ui',
+        main: { state: 'working:think', lastTool: 'Read', lastCmd: 'public/render.mjs' }, // demo: "thinking…" ticker
+        workers: { f1: { state: 'working:spawn', lastTool: 'Agent', lastCmd: 'wire the ticker' } } },
+    };
+    window.__demoChat = {
+      'sess-alpha-01': [
+        { k: 'user', t: 'move the login logic into a hook' },
+        { k: 'say', t: 'Extracting the auth calls into useAuth() and wiring it into <Login>.' },
+        { k: 'cmd', tool: 'Grep', t: 'signIn|useAuth' },
+        { k: 'cmd', tool: 'Edit', t: 'src/auth/useAuth.ts' },
+        { k: 'cmd', tool: 'Bash', t: 'npm test -- auth' },
+        { k: 'say', t: 'Done — 12 tests pass, <Login> now consumes the hook.' },
+      ],
+      'sess-bravo-02': [
+        { k: 'user', t: 'add a checkout page with Stripe' },
+        { k: 'cmd', tool: 'Write', t: 'app/checkout/page.tsx' },
+        { k: 'cmd', tool: 'Bash', t: 'npm i @stripe/stripe-js stripe' },
+        { k: 'say', t: 'Added Stripe Elements and a server-side PaymentIntent route.' },
+      ],
+      'sess-charlie-3': [
+        { k: 'user', t: 'why does /orders 500 for guest users?' },
+        { k: 'cmd', tool: 'Bash', t: 'grep -rn "user_id" src/orders' },
+        { k: 'say', t: 'Guest carts have no user_id; the join throws. Adding a null guard.' },
+      ],
+      'sess-delta-04': [
+        { k: 'user', t: 'scaffold a reusable VPC module' },
+        { k: 'cmd', tool: 'Write', t: 'modules/vpc/main.tf' },
+        { k: 'say', t: 'Added subnets, NAT, route tables; variables for CIDR and AZ count.' },
+      ],
+      'sess-foxtrot-6': [
+        { k: 'user', t: 'make the robots wander and weld' },
+        { k: 'cmd', tool: 'Edit', t: 'public/render.mjs' },
+        { k: 'say', t: 'Added floor wander with element-avoidance and a 5s work loop.' },
+      ],
+    };
+    lastWorlds = demo;
+    board.update(demo);
+    setCount(demo);
+    statusEl.textContent = 'demo'; statusEl.className = 'live';
+    renderDebug();
+
+    // Demo only: cycle a few tools so the Matrix code-ticker visibly scrolls (live data
+    // advances it naturally as real tool calls change; static demo state would not).
+    const feed = {
+      'sess-alpha-01': [['Bash', 'npm test -- auth'], ['Bash', 'git status'], ['Read', 'src/login.tsx'], ['Edit', 'useAuth.ts']],
+      'sess-delta-04': [['Grep', 'aws_vpc'], ['Write', 'modules/vpc/main.tf'], ['Bash', 'terraform plan'], ['PowerShell', 'terraform apply']],
+    };
+    let fi = 0;
+    setInterval(() => {
+      fi++;
+      for (const [sid, seq] of Object.entries(feed)) {
+        const w = demo[sid]; if (!w || w.main.state === 'idle') continue;
+        const [tool, cmd] = seq[fi % seq.length];
+        w.main.lastTool = tool; w.main.lastCmd = cmd;
+      }
+      board.update(demo);
+    }, 1200);
+  }
+
+  // --- notifications + tab badge (feature 1) ---
+  // Desktop-notify on the things you must act on (permission prompts, errors), badge the tab
+  // title with how many sessions need you, and — only when the tab is hidden — ping on finishes.
+  const BASE_TITLE = 'Hex-World';
+  const notifyState = new Map();   // sid -> { reason, finishedAt, lastError }
+  if ('Notification' in window && Notification.permission === 'default') {
+    try { Notification.requestPermission(); } catch { /* */ }
+    addEventListener('click', function once() { try { if (Notification.permission === 'default') Notification.requestPermission(); } catch { /* */ } removeEventListener('click', once); }, { once: true });
+  }
+  function fireNote(title, body) {
+    try { if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body }); } catch { /* */ }
+  }
+  function updateNotifications(worlds) {
+    let needy = 0;
+    for (const [sid, w] of Object.entries(worlds || {})) {
+      const reason = w.attention && w.attention.reason;
+      if (reason) needy++;
+      const prev = notifyState.get(sid) || {};
+      const name = w.title || sid.slice(0, 6);
+      if (reason === 'permission' && prev.reason !== 'permission') fireNote(`🔔 Needs you — ${name}`, (w.attention && w.attention.message) || 'Waiting for permission');
+      if (w.lastError && w.lastError !== prev.lastError) fireNote(`❌ Error — ${name}`, 'A tool call errored');
+      if (w.finishedAt && w.finishedAt !== prev.finishedAt && document.hidden) fireNote(`✅ Done — ${name}`, 'Turn finished');
+      notifyState.set(sid, { reason: reason || null, finishedAt: w.finishedAt || prev.finishedAt || 0, lastError: w.lastError || prev.lastError || 0 });
+    }
+    for (const sid of [...notifyState.keys()]) if (!(worlds && worlds[sid])) notifyState.delete(sid);
+    document.title = (needy ? `(${needy}) ` : '') + BASE_TITLE;
+  }
+
+  // Reconnect with exponential backoff (1s → 10s cap) so a downed server isn't hammered every
+  // second, and surface a full-width banner while offline — the Pixi board keeps rendering the last
+  // state, so without this the frozen scene looks live and stale data goes unnoticed.
+  let backoff = 1000;
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}`);
+    ws.onopen = () => {
+      statusEl.textContent = 'live'; statusEl.className = 'live';
+      offlineEl.classList.remove('show'); backoff = 1000;   // reset backoff on a good connection
+    };
+    ws.onclose = () => {
+      statusEl.textContent = 'disconnected — retrying…'; statusEl.className = '';
+      offlineEl.classList.add('show');
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 1.6, 10000);
+    };
+    ws.onerror = () => { try { ws.close(); } catch { /* onclose handles retry */ } };
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type !== 'state') return;
+      lastWorlds = msg.worlds;
+      board.update(msg.worlds);
+      setCount(msg.worlds);
+      updateNotifications(msg.worlds);
+      renderDebug();
+    };
+  }
+  // (demo mode already ran above and returns; live mode connects once here)
+  if (!new URLSearchParams(location.search).has('demo')) connect();
+</script>
