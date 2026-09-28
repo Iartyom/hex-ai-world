@@ -155,9 +155,18 @@ const server = http.createServer((req, res) => {
     if (w) {
       title = titleFor(w);
       if (agent && agent !== 'main') {
+        // Each subagent has its own transcript. Claude Code only reports its path (agent_transcript_path)
+        // at SubagentStop — i.e. AFTER the run — so for a LIVE subagent we construct the path from the
+        // session transcript: <session>.jsonl → <session>/subagents/agent-<id>.jsonl (its on-disk layout,
+        // confirmed against the hook-event log). The file is written continuously during the run.
         const wk = w.workers[agent];
-        tpath = (wk && wk.transcriptPath) || w.transcriptPath;
-        fallback = !(wk && wk.transcriptPath);           // no subagent transcript → showing session's
+        let sub = wk && wk.transcriptPath;
+        if (!sub && w.transcriptPath) {
+          const cand = path.join(path.dirname(w.transcriptPath), path.basename(w.transcriptPath, '.jsonl'), 'subagents', `agent-${agent}.jsonl`);
+          try { if (fs.existsSync(cand)) sub = cand; } catch { /* fall back to session transcript */ }
+        }
+        tpath = sub || w.transcriptPath;
+        fallback = !sub;                                  // no subagent transcript found → showing session's
       } else {
         tpath = w.transcriptPath;
       }

@@ -223,11 +223,14 @@ function renderAll(entries, fallback) {
 
 // ---- panel ----
 let panel, bar, ttl, sub, body, searchWrap, searchInput, searchCnt, statsBar;
-let activeSid = null, timer = null, lastKey = '';
+let activeSid = null, activeAgent = 'main', timer = null, lastKey = '';
 let lastEntries = [], lastFallback = false;   // last painted data (so search can re-paint)
 let searchTerm = '', hits = [], curHit = -1;
 
-export function mirrorSidActive() { return (panel && panel.style.display !== 'none') ? activeSid : null; }
+// True only when the mirror currently open is for THIS exact session + agent (main or a subagent id).
+export function mirrorActive(sid, agent = 'main') {
+  return !!(panel && panel.style.display !== 'none' && activeSid === sid && activeAgent === agent);
+}
 export function revealMirror() { if (panel) panel.style.display = 'flex'; }
 
 function build() {
@@ -348,12 +351,14 @@ function paint(stick) {
   if (atBottom) body.scrollTop = body.scrollHeight;
 }
 
-async function poll(sid) {
+async function poll(sid, agent = 'main') {
   let data = { entries: [], fallback: false };
   const demo = typeof window !== 'undefined' && window.__demoChat && window.__demoChat[sid];
   if (demo) data = { entries: demo, fallback: false };
-  else { try { data = await fetch(`/chat?session=${encodeURIComponent(sid)}&agent=main`).then((r) => r.json()); } catch { return; } }
-  if (activeSid !== sid) return;
+  // agent=main → the session transcript; agent=<agent_id> → that subagent's own transcript
+  // (server resolves it via the worker's agent_transcript_path, falling back to main if it has none).
+  else { try { data = await fetch(`/chat?session=${encodeURIComponent(sid)}&agent=${encodeURIComponent(agent)}`).then((r) => r.json()); } catch { return; } }
+  if (activeSid !== sid || activeAgent !== agent) return;   // a newer open superseded this poll
   updateStats(data.stats);                    // refresh stats every poll (tokens/elapsed drift)
   const entries = data.entries || [];
   const key = entries.length + '|' + (entries.length ? JSON.stringify(entries[entries.length - 1]).length : 0) + '|' + (entries.length ? entries[entries.length - 1].k : '');
@@ -366,19 +371,22 @@ async function poll(sid) {
 
 export function closeMirror() {
   if (timer) { clearInterval(timer); timer = null; }
-  activeSid = null; lastKey = ''; lastEntries = []; searchTerm = '';
+  activeSid = null; activeAgent = 'main'; lastKey = ''; lastEntries = []; searchTerm = '';
   if (searchWrap) { searchWrap.classList.remove('on'); searchInput.value = ''; }
   if (panel) panel.style.display = 'none';
 }
-export function openMirror(sid, meta = {}) {
+// `agent` is 'main' for the session's own transcript, or a subagent's agent_id to mirror that
+// subagent's own run (each subagent has its own transcript; without this every robot showed main).
+export function openMirror(sid, meta = {}, agent = 'main') {
   if (!panel) build();
   if (timer) { clearInterval(timer); timer = null; }
-  activeSid = sid; lastKey = ''; lastEntries = [];
-  ttl.textContent = meta.title || sid.slice(0, 8);
+  activeSid = sid; activeAgent = agent; lastKey = ''; lastEntries = [];
+  const isSub = agent && agent !== 'main';
+  ttl.textContent = (meta.title || sid.slice(0, 8)) + (isSub ? `  ▸ subagent ${String(agent).slice(0, 6)}` : '');
   sub.textContent = `· ${baseName(meta.cwd) || meta.cwd || ''}`;
   panel.style.display = 'flex';
   if (!panel.style.left) { panel.style.left = Math.max(10, (window.innerWidth - 820) / 2) + 'px'; panel.style.top = '64px'; }
   body.innerHTML = '<span class="hwm-dim">loading…</span>';
-  poll(sid);
-  timer = setInterval(() => poll(sid), POLL_MS);
+  poll(sid, agent);
+  timer = setInterval(() => poll(sid, agent), POLL_MS);
 }

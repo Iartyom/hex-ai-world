@@ -107,6 +107,21 @@ test('watchdog: removes an idle+quiet subagent, keeps a busy one', () => {
   assert.ok(worlds.s.workers.busy);
 });
 
+test('watchdog: removes a GHOST subagent (silent + stale pending) but keeps one mid long tool', () => {
+  const now = 3_500_000_000;
+  const worlds = fresh();
+  worlds.s = { status: 'active', lastSeen: now, main: newUnit(now), workers: {} };
+  // ghost: silent past WORKER_GONE_AFTER AND its only pending tool is itself stale (dropped SubagentStop)
+  worlds.s.workers.ghost = newUnit(now); worlds.s.workers.ghost.lastSeen = now - WORKER_GONE_AFTER - 1;
+  worlds.s.workers.ghost.pending.set('t', { tool: 'Bash', cat: 'shell', startedAt: now - STUCK_AFTER - 1 });
+  // alive-but-slow: silent, but its pending tool is fresh (a legit long-running tool just started)
+  worlds.s.workers.slow = newUnit(now); worlds.s.workers.slow.lastSeen = now - WORKER_GONE_AFTER - 1;
+  worlds.s.workers.slow.pending.set('t', { tool: 'Bash', cat: 'shell', startedAt: now - 1000 });
+  watchdog(worlds, now);
+  assert.equal(worlds.s.workers.ghost, undefined, 'ghost (quiet + stuck pending) removed');
+  assert.ok(worlds.s.workers.slow, 'a worker mid fresh tool is kept');
+});
+
 test('watchdog: ghost world removed after WORLD_REMOVE_AFTER', () => {
   const now = 4_000_000_000;
   const worlds = fresh();

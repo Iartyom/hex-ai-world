@@ -16,7 +16,7 @@ import {
 import { WORLDS, worldFramePath } from '/config/worlds.mjs';
 import { UNIT, DIRS8, dirFromAngle, framePath, NEAREST_CARDINAL } from '/config/units.mjs';
 import { axialToPixel, spiralCells, hexCorners } from './hexgrid.mjs';
-import { openMirror, mirrorSidActive, revealMirror } from './terminal.mjs';
+import { openMirror, mirrorActive, revealMirror } from './terminal.mjs';
 import { esc, baseName, tickerText } from './pure.mjs';
 import { makeWorldAllocator, makeCellAllocator } from './alloc.mjs';
 import { makeFloor } from './floor.mjs';
@@ -311,12 +311,15 @@ export async function startBoard(mountEl) {
     c.on('pointerover', () => {
       c._hovered = true; c._moving = false;
       hoveredSid = sid;                                   // freeze this base's bob while hovered
-      // If this session already has a live mirror open, surface it instead of the tooltip.
-      if (key === 'main' && mirrorSidActive() === sid) { hideTip(); revealMirror(); return; }
+      // If THIS robot's mirror (session or this subagent) is already open, surface it, not a tooltip.
+      if (mirrorActive(sid, key)) { hideTip(); revealMirror(); return; }
       showTip(sid, key, c);
     });
     c.on('pointerout', () => { c._hovered = false; if (hoveredSid === sid) hoveredSid = null; hideTip(); });
-    c.on('pointertap', () => openMirror(sid, sessionMeta.get(sid) || {})); // open live read-only session mirror
+    // Open the live read-only mirror for THIS robot: 'main' → session transcript; a subagent robot
+    // (key = agent_id) → that subagent's own run. Passing `key` is the fix for subagents showing the
+    // main chat instead of their real run.
+    c.on('pointertap', () => openMirror(sid, sessionMeta.get(sid) || {}, key));
     c.alpha = 0;
     return c;
   }

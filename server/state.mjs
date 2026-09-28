@@ -243,7 +243,14 @@ export function watchdog(worlds, now = Date.now()) {
     for (const [aid, worker] of Object.entries(w.workers)) {
       changed = pruneStale(worker, now) || changed;
       if (worker.busy && worker.pending.size === 0 && now - worker.lastSeen > THINK_MAX) { worker.busy = false; changed = true; }
-      if (worker.pending.size === 0 && now - worker.lastSeen > WORKER_GONE_AFTER) { delete w.workers[aid]; changed = true; }
+      // Remove a subagent that's gone quiet past WORKER_GONE_AFTER. A LIVE subagent emits Pre/Post
+      // events continuously, so long silence means it's done. We used to keep any worker with a tool
+      // in-flight — but a dropped SubagentStop leaves a "ghost" stuck on a pending tool that then
+      // lingered ~15min (until TOOL_MAX_INFLIGHT). So also drop it once its only pending tools are
+      // themselves stale (in-flight past STUCK_AFTER): quiet + stuck-pending == ghost, not alive.
+      // (`every` on an empty pending Map is true, preserving the old idle+quiet removal.)
+      const staleOrEmpty = [...worker.pending.values()].every((v) => now - v.startedAt > STUCK_AFTER);
+      if (now - worker.lastSeen > WORKER_GONE_AFTER && staleOrEmpty) { delete w.workers[aid]; changed = true; }
     }
   }
   return changed;
