@@ -1,25 +1,13 @@
 /*
  * Visual theme for the render layer (Phase 2+). Single source of truth for colors
  * and per-behavior motion, imported by the browser render code. StarCraft-style:
- * per-session TEAM colors, per-tool-category ACCENT colors, and MOTION params that
- * turn each locked behavior key into a distinct placeholder animation.
+ * per-tool-category ACCENT colors and MOTION params that turn each locked behavior
+ * key into a distinct placeholder animation. (Per-session color now comes from the
+ * session's assigned world in config/worlds.mjs, not a hashed team color.)
  *
  * Colors are 0xRRGGBB numbers (PixiJS-native). Tune freely — keep the KEYS aligned
  * with config/behaviors.mjs (categories) and WORKER_BEHAVIOR values (motion names).
  */
-
-// Per-session base colors (classic RTS player colors). Assigned stably by hash.
-export const TEAM_COLORS = [
-  0xff4d4d, 0x4d7cff, 0x2fd6c3, 0xb26bff,
-  0xff9a2e, 0xf0e04a, 0x49d65e, 0xff77c2,
-];
-
-// Deterministic sessionId -> team color (stable across reconnects/updates).
-export function teamColorFor(sessionId) {
-  let h = 0;
-  for (let i = 0; i < sessionId.length; i++) h = (h * 31 + sessionId.charCodeAt(i)) >>> 0;
-  return TEAM_COLORS[h % TEAM_COLORS.length];
-}
 
 // Per-tool-category accent color (category comes from config/behaviors.mjs).
 export const CATEGORY_COLOR = {

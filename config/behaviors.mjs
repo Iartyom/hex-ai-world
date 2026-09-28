@@ -35,11 +35,5 @@ export const WORKER_BEHAVIOR = {
   'idle':          'standby',  // ALIVE, waiting on the model — hover in standby ("awaiting orders")
 };
 export const DEFAULT_WORKER_BEHAVIOR = 'operate';
-export function workerBehaviorFor(state) { return WORKER_BEHAVIOR[state] || DEFAULT_WORKER_BEHAVIOR; }
-
-// --- WORLD behavior: the whole session/base mood ---
-export const WORLD_BEHAVIOR = {
-  active:   'online',     // base powered up, units working
-  dormant:  'powerdown',  // session ended or quiet — base dimmed, units in standby pods
-};
-export function worldBehaviorFor(status) { return WORLD_BEHAVIOR[status] || 'powerdown'; }
+// render.mjs reads the WORKER_BEHAVIOR map directly (behaviorName); the state string ("working:<cat>"
+// | "idle") is the whole vocabulary it needs. World mood (active/dormant) is handled in the renderer.

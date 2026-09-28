@@ -21,11 +21,6 @@ export const THINK_MAX = 90_000;                    // "thinking" (busy, no tool
 export const FLASH_TTL = 6_000;                     // finish/error timestamps only ship while this fresh
 
 // ---- transcript parsing (pure: operates on the raw JSONL text) ---------------
-export function textFromContent(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.filter((b) => b && b.type === 'text' && b.text).map((b) => b.text).join('\n');
-  return '';
-}
 export const cap = (s, n) => (typeof s === 'string' && s.length > n ? s.slice(0, n) + '\n… (truncated)' : (typeof s === 'string' ? s : ''));
 
 // One-line summary of a tool call (for the robot's floating ticker) — first non-empty summary field.

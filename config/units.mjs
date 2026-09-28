@@ -43,4 +43,3 @@ export function dirFromAngle(rad) {
 }
 
 export const framePath = (anim, dir, i) => `${UNIT.base}/animations/${anim}/${dir}/frame_${String(i).padStart(3, '0')}.png`;
-export const rotationPath = (dir) => `${UNIT.base}/rotations/${dir}.png`;

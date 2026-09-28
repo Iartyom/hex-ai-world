@@ -9,15 +9,14 @@ import assert from 'node:assert/strict';
 
 import { WORLDS, worldFramePath } from '../config/worlds.mjs';
 import {
-  UNIT, NEAREST_CARDINAL, DIRS8, dirFromAngle, framePath, rotationPath,
+  UNIT, NEAREST_CARDINAL, DIRS8, dirFromAngle, framePath,
 } from '../config/units.mjs';
 import {
   TOOL_CATEGORY, DEFAULT_CATEGORY, categoryFor,
-  WORKER_BEHAVIOR, DEFAULT_WORKER_BEHAVIOR, workerBehaviorFor,
-  WORLD_BEHAVIOR, worldBehaviorFor,
+  WORKER_BEHAVIOR, DEFAULT_WORKER_BEHAVIOR,
 } from '../config/behaviors.mjs';
 import {
-  TEAM_COLORS, teamColorFor, CATEGORY_COLOR, IDLE_COLOR, DEFAULT_ACCENT,
+  CATEGORY_COLOR, IDLE_COLOR, DEFAULT_ACCENT,
   MOTION, DEFAULT_MOTION,
 } from '../config/theme.mjs';
 import { axialToPixel, spiralCells, hexCorners } from '../public/hexgrid.mjs';
@@ -91,10 +90,6 @@ test('framePath builds a zero-padded animation frame path from UNIT.base', () =>
   assert.equal(framePath('work', 'south', 9), `${UNIT.base}/animations/work/south/frame_009.png`);
 });
 
-test('rotationPath builds a rotation path from UNIT.base', () => {
-  assert.equal(rotationPath('north'), `${UNIT.base}/rotations/north.png`);
-});
-
 test('UNIT.anims dirLists are subsets of DIRS8', () => {
   for (const [name, anim] of Object.entries(UNIT.anims)) {
     for (const d of anim.dirList) {
@@ -128,36 +123,9 @@ test('every TOOL_CATEGORY value has a matching working:<cat> behavior', () => {
   }
 });
 
-test('workerBehaviorFor resolves known states and falls back', () => {
-  assert.equal(workerBehaviorFor('working:shell'), 'harvest');
-  assert.equal(workerBehaviorFor('working:edit'), 'weld');
-  assert.equal(workerBehaviorFor('idle'), 'standby');
-  assert.equal(workerBehaviorFor('working:mystery'), DEFAULT_WORKER_BEHAVIOR);
-});
-
-test('worldBehaviorFor resolves status, defaulting to powerdown', () => {
-  assert.equal(worldBehaviorFor('active'), 'online');
-  assert.equal(worldBehaviorFor('dormant'), 'powerdown');
-  assert.equal(worldBehaviorFor('anything-else'), 'powerdown');
-  assert.equal(WORLD_BEHAVIOR.active, 'online');
-});
-
 // ---------------------------------------------------------------------------
 // config/theme.mjs
 // ---------------------------------------------------------------------------
-test('teamColorFor is deterministic and always a valid team color', () => {
-  for (const s of ['a', 'abc', 'session-xyz', '0', 'longer-id-here']) {
-    const c = teamColorFor(s);
-    assert.equal(c, teamColorFor(s), 'stable for same input');
-    assert.ok(TEAM_COLORS.includes(c), `${c} is one of TEAM_COLORS`);
-  }
-});
-
-test('teamColorFor matches the documented hash index', () => {
-  // hash('abc') % TEAM_COLORS.length = 96354 % 8 = 2
-  assert.equal(teamColorFor('abc'), TEAM_COLORS[2]);
-});
-
 test('CATEGORY_COLOR covers every non-idle tool category', () => {
   const cats = new Set(Object.values(TOOL_CATEGORY));
   cats.add(DEFAULT_CATEGORY);
