@@ -2,7 +2,7 @@
 node_modules/
 
 # Captured hook events + runtime logs (data, not source)
-hooks/agent-events.jsonl
+hooks/agent-events.jsonl*
 hooks/*.log
 
 # Cygwin/Git-Bash crash dumps (junk)
@@ -14,3 +14,4 @@ hooks/*.log
 
 # Local GIF recordings from browser-automation testing (not source)
 gifs/
+hooks/worlds.json*

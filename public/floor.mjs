@@ -30,3 +30,44 @@ export function makeFloor(WORLD_W) {
   }
   return { FLOOR, onFloor, randomFloorPoint };
 }
+
+/*
+ * Robot personal space (pure, so it's simulated in test/floor.test.mjs). Units are plain objects with
+ * _px/_py (position), _tx/_ty (walk target), _moving, _working, _hovered, _removing. Distance doubles
+ * y because the deck is drawn iso-squashed: a robot slightly in front of another overlaps it on screen.
+ */
+export function makeSpacing({ onFloor, randomFloorPoint }, spacing) {
+  const isoDist = (ax, ay, bx, by) => Math.hypot(ax - bx, (ay - by) * 2);
+  // A floor point clear of every other robot (where each stands AND where it's heading).
+  // ponytail: best-of-12 random samples, not path planning — fine for the handful of robots per platform.
+  function clearPoint(peers, self) {
+    let best = null, bestGap = -1;
+    for (let k = 0; k < 12; k++) {
+      const p = randomFloorPoint();
+      let gap = Infinity;
+      for (const o of peers || []) {
+        if (o === self || o._removing) continue;
+        gap = Math.min(gap, isoDist(p.x, p.y, o._px, o._py), isoDist(p.x, p.y, o._tx, o._ty));
+      }
+      if (gap >= spacing * 1.4) return p;
+      if (gap > bestGap) { bestGap = gap; best = p; }
+    }
+    return best;
+  }
+  // One frame of easing `u` away from anyone closer than `spacing`. A working/hovered robot holds still
+  // and the other yields; a push that would leave the deck is skipped; a walk aimed into someone re-routes.
+  function separate(u, peers) {
+    if (u._working || u._hovered) return;
+    for (const o of peers || []) {
+      if (o === u || o._removing) continue;
+      const dx = u._px - o._px, dy = (u._py - o._py) * 2, d = Math.hypot(dx, dy) || 0.01;
+      if (d >= spacing) continue;
+      const share = o._working || o._hovered ? 1 : 0.5;
+      const push = Math.min(2, (spacing - d) * share * 0.2);   // a few px per frame: a nudge, not a jump
+      const nx = u._px + (dx / d) * push, ny = u._py + (dy / d / 2) * push;
+      if (onFloor(nx, ny)) { u._px = nx; u._py = ny; }
+      if (u._moving && isoDist(u._tx, u._ty, o._px, o._py) < spacing) { const t = clearPoint(peers, u); u._tx = t.x; u._ty = t.y; }
+    }
+  }
+  return { clearPoint, separate, isoDist };
+}

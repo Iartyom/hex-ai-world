@@ -238,7 +238,7 @@ function build() {
   bar = document.createElement('div'); bar.className = 'hwm-bar';
   bar.innerHTML = '<span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span>'
     + '<span class="dot" style="background:#27c93f"></span><span class="ttl"></span><span class="sub"></span>'
-    + '<span class="hwm-live"><b></b>live</span><span class="find" title="search (Ctrl+F)">⌕</span><span class="x" title="close">✕</span>';
+    + '<span class="hwm-live"><b></b>live</span><span class="find" title="search (Ctrl+F)">⌕</span><span class="x" title="close (Esc)">✕</span>';
   ttl = bar.querySelector('.ttl'); sub = bar.querySelector('.sub');
   bar.querySelector('.x').addEventListener('click', closeMirror);
   bar.querySelector('.find').addEventListener('click', () => toggleSearch());
@@ -248,7 +248,7 @@ function build() {
     + '<span class="cnt"></span><span class="nav prev" title="previous (Shift+Enter)">▲</span>'
     + '<span class="nav next" title="next (Enter)">▼</span><span class="nav done" title="close">✕</span>';
   searchInput = searchWrap.querySelector('input'); searchCnt = searchWrap.querySelector('.cnt');
-  searchInput.addEventListener('input', () => { searchTerm = searchInput.value; paint(false); if (hits.length) setHit(0); });
+  searchInput.addEventListener('input', () => { searchTerm = searchInput.value; paint(); if (hits.length) setHit(0); });
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
     else if (e.key === 'Escape') { e.preventDefault(); toggleSearch(false); }
@@ -264,6 +264,12 @@ function build() {
   makeDraggable(panel, bar);
   panel.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); toggleSearch(true); }
+  });
+  // Esc closes the open mirror from anywhere on the page (the search box's own Esc closes just the
+  // search first — it preventDefaults, so we skip that press).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || panel.style.display === 'none') return;
+    if (searchWrap.classList.contains('on')) toggleSearch(false); else closeMirror();
   });
 }
 function makeDraggable(el, handle) {
@@ -314,7 +320,7 @@ function toggleSearch(on) {
   const show = on === undefined ? !searchWrap.classList.contains('on') : on;
   searchWrap.classList.toggle('on', show);
   if (show) { searchInput.focus(); searchInput.select(); }
-  else { searchTerm = ''; searchInput.value = ''; paint(false); }
+  else { searchTerm = ''; searchInput.value = ''; paint(); }
 }
 
 // --- stats bar (feature 4) ---
@@ -324,11 +330,6 @@ function fmtDur(ms) {
   const s = Math.round(ms / 1000); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
   return h ? `${h}h ${m}m` : m ? `${m}m ${ss}s` : `${ss}s`;
 }
-// Rough $ estimate (model unknown → blended Claude-ish rates; clearly marked ~).
-function estCost(s) {
-  const c = (s.tokIn || 0) / 1e6 * 3 + (s.tokOut || 0) / 1e6 * 15 + (s.tokCacheRead || 0) / 1e6 * 0.3 + (s.tokCacheWrite || 0) / 1e6 * 3.75;
-  return c < 0.01 ? '<$0.01' : '~$' + c.toFixed(2);
-}
 function updateStats(s) {
   if (!statsBar) return;
   if (!s) { statsBar.innerHTML = ''; return; }
@@ -337,18 +338,16 @@ function updateStats(s) {
     ['\u{1f527}', `${s.tools || 0} tools`],
     ['\u{1f4c4}', `${s.files || 0} files`],
     ['⇅', `${fmtNum(s.tokTotal)} tok`],
-    ['\u{1f4b0}', estCost(s)],
+    ['\u{1f4b0}', (s.cost > 0 && s.cost < 0.01 ? '<$0.01' : '$' + (s.cost || 0).toFixed(2)) + (s.costPartial ? ' (partial)' : '')],
   ];
   statsBar.innerHTML = items.map(([ic, v]) => `<span class="it"><span class="ic">${ic}</span>${v}</span>`).join('');
 }
 
 // Render lastEntries into the body: HTML → highlight markdown code → apply search marks.
-function paint(stick) {
-  const atBottom = stick && body.scrollTop + body.clientHeight >= body.scrollHeight - 16;
+function paint() {
   body.innerHTML = lastEntries.length ? renderAll(lastEntries, lastFallback) : '<span class="hwm-dim">(no transcript yet)</span>';
   body.querySelectorAll('.hwm-md pre code').forEach((el) => { try { hljs.highlightElement(el); } catch { /* */ } });
   highlightMatches(searchTerm);
-  if (atBottom) body.scrollTop = body.scrollHeight;
 }
 
 async function poll(sid, agent = 'main') {
@@ -361,11 +360,11 @@ async function poll(sid, agent = 'main') {
   if (activeSid !== sid || activeAgent !== agent) return;   // a newer open superseded this poll
   updateStats(data.stats);                    // refresh stats every poll (tokens/elapsed drift)
   const entries = data.entries || [];
-  const key = entries.length + '|' + (entries.length ? JSON.stringify(entries[entries.length - 1]).length : 0) + '|' + (entries.length ? entries[entries.length - 1].k : '');
+  const key = JSON.stringify(entries);        // exact: entries are capped (CHAT_TAIL), so this is cheap
   if (key === lastKey) return;
   lastKey = key; lastEntries = entries; lastFallback = data.fallback;
   const wasAtBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 16;
-  paint(false);
+  paint();
   if (wasAtBottom && !searchTerm) body.scrollTop = body.scrollHeight;
 }
 

@@ -1,12 +1,8 @@
 /*
- * Phase 2 render layer — StarCraft-style hex board of bases, PLACEHOLDER shapes only.
- * Consumes the server's full-state messages and diffs them onto a Pixi scene:
- *   world  -> a hex "base"      (team-colored; dims when dormant)
- *   main   -> a square core unit at base center
- *   worker -> a round unit on a ring around center (VILLAGE, keyed by agent_id)
- * Behaviors (config/behaviors.mjs) + colors/motion (config/theme.mjs) drive distinct
- * placeholder animation per tool category — the thing GATE 2 asks us to judge.
- * NO PixelLab art here.
+ * Render layer — consumes the server's full-state messages and diffs them onto a Pixi scene:
+ *   world  -> a floating hex platform (config/worlds.mjs art; dims when dormant)
+ *   main + each subagent -> an animated robot wandering the platform (config/units.mjs)
+ * If art fails to load it falls back to placeholder shapes animated by config/theme.mjs MOTION.
  */
 import { Application, Container, Graphics, Text, Sprite, AnimatedSprite, Assets, Ellipse, Texture, Rectangle } from '/vendor/pixi.min.mjs';
 import { WORKER_BEHAVIOR, DEFAULT_WORKER_BEHAVIOR } from '/config/behaviors.mjs';
@@ -14,17 +10,17 @@ import {
   CATEGORY_COLOR, IDLE_COLOR, DEFAULT_ACCENT, MOTION, DEFAULT_MOTION,
 } from '/config/theme.mjs';
 import { WORLDS, worldFramePath } from '/config/worlds.mjs';
-import { UNIT, DIRS8, dirFromAngle, framePath, NEAREST_CARDINAL } from '/config/units.mjs';
+import { UNIT, dirFromAngle, framePath, NEAREST_CARDINAL } from '/config/units.mjs';
 import { axialToPixel, spiralCells, hexCorners } from './hexgrid.mjs';
 import { openMirror, mirrorActive, revealMirror } from './terminal.mjs';
 import { esc, baseName, tickerText } from './pure.mjs';
+import { barChart, stackedBars, stateLegend, STATE_COLORS, SERIES, fmtUsd, fmtDur } from './charts.mjs';
 import { makeWorldAllocator, makeCellAllocator } from './alloc.mjs';
-import { makeFloor } from './floor.mjs';
+import { makeFloor, makeSpacing } from './floor.mjs';
 
 const HEX_SIZE = 64;       // fallback placeholder hex size (used only if a world image is missing)
 const LAYOUT_SIZE = 200;   // hex-grid spacing between bases — tighter so the islands cluster closer together
 const WORLD_W = 320;       // on-screen width every world backdrop is normalized to
-const RING = 28;           // radius units sit on around the base center
 const BG = 0x0b0e14;
 
 // state string ("working:shell" | "idle") -> behavior name / accent color / motion
@@ -47,7 +43,7 @@ export async function startBoard(mountEl) {
   app.stage.addChild(space);
   const stars = [];
   function buildStars() {
-    space.removeChildren(); stars.length = 0;
+    for (const c of space.removeChildren()) c.destroy(); stars.length = 0;
     const w = app.screen.width, h = app.screen.height;
     const n = Math.min(420, Math.round((w * h) / 6500)); // density scales with viewport, capped
     for (let i = 0; i < n; i++) {
@@ -127,13 +123,52 @@ export async function startBoard(mountEl) {
     .hw-tip .a.idle{color:#6b7488}
     .hw-tip .a.need{color:#ffcf4d;font-weight:700}
     .hw-tip .hint{margin-top:4px;color:#465067;font-size:10.5px}
+    .hw-tip .g{margin-top:7px}
+    .hw-tip .gl{display:flex;justify-content:space-between;color:#8b94a8;font-size:10.5px;margin-bottom:2px}
+    .hw-tip .gl b{color:#cdd3e0;font-weight:600}
+    .hw-tip .ax{display:flex;justify-content:space-between;color:#465067;font-size:9.5px}
+    .hw-tip .tot{margin-top:6px;color:#8b94a8;font-size:10.5px}
+    .hw-tip .tot b{color:#cdd3e0;font-weight:600}
+    .hw-tip .lgs{display:flex;gap:9px;color:#8b94a8;font-size:10px;margin-top:2px}
+    .hw-tip .lg{display:inline-flex;align-items:center;gap:4px}
+    .hw-tip .lg i{width:8px;height:8px;border-radius:2px;display:inline-block}
   `;
   document.head.appendChild(tipStyle);
   const tip = document.createElement('div'); tip.className = 'hw-tip';
   document.body.appendChild(tip);
   let hoveredSid = null;
 
-  function hideTip() { tip.style.display = 'none'; }
+  // Per-session stats for the tooltip graphs, fetched lazily on hover (not in every broadcast).
+  const statsCache = new Map();                // sid -> { at, data }
+  let tipArgs = null;                          // what the tip currently shows, so a late fetch can refresh it
+  function loadStats(sid) {
+    const hit = statsCache.get(sid);
+    if (hit && performance.now() - hit.at < 5000) return;
+    statsCache.set(sid, { at: performance.now(), data: hit && hit.data });   // mark in-flight
+    fetch(`/stats?session=${encodeURIComponent(sid)}`).then((r) => (r.ok ? r.json() : null)).then((data) => {
+      statsCache.set(sid, { at: performance.now(), data });
+      if (tipArgs && tipArgs[0] === sid && tip.style.display === 'block') showTip(...tipArgs);
+    }).catch(() => {});
+  }
+  function statsHtml(sid) {
+    const d = statsCache.get(sid)?.data;
+    if (!d) return '';
+    const { series, timeline: tl } = d;
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    const sumC = sum(series.cost);
+    const ax = '<div class="ax"><span>−2h</span><span>now</span></div>';
+    // What the agent spent the last 2h doing (sampled by the server); empty space = idle / server off.
+    const layers = ['working', 'thinking', 'blocked'].map((k) => ({ values: tl[k], color: STATE_COLORS[k] }));
+    const tracked = sum(tl.working) + sum(tl.thinking) + sum(tl.blocked) + sum(tl.idle);
+    const busyPct = tracked ? Math.round(100 * (sum(tl.working) + sum(tl.thinking)) / tracked) : 0;
+    return `<div class="g"><div class="gl"><span>activity · 5-min</span><b>${tracked ? `${busyPct}% busy · ${fmtDur(sum(tl.blocked))} waiting on you` : 'no samples yet'}</b></div>`
+      + `${stackedBars(layers, tl.step, { w: 230, h: 22 })}${ax}<div class="lgs">${stateLegend()}</div></div>`
+      + `<div class="g"><div class="gl"><span>cost · 5-min</span><b>${fmtUsd(sumC)}</b></div>${barChart(series.cost, { w: 230, h: 22, color: SERIES.cost })}${ax}</div>`
+      + `<div class="tot">session <b>${fmtUsd(d.cost)}</b>${d.costPartial ? ' (partial)' : ''} · ${d.tools} tools · ${fmtDur(d.activeMs)} active`
+      + `${d.subagents ? ` · ${d.subagents} subagent${d.subagents === 1 ? '' : 's'}` : ''}</div>`;
+  }
+
+  function hideTip() { tip.style.display = 'none'; tipArgs = null; }
   // Compact tooltip near the robot: title, folder, and its current activity (or "needs you").
   function showTip(sid, agent, unit) {
     const meta = sessionMeta.get(sid) || {};
@@ -147,9 +182,12 @@ export async function startBoard(mountEl) {
     if (attn) { cls = 'need'; act = attn === 'permission' ? '● needs you — permission' : '● idle — your turn'; }
     else if (st === 'working:think') { cls = 'think'; act = 'thinking…'; }
     else if (st.startsWith('working')) { cls = ''; act = tickerText(st, unit._lastTool, unit._lastCmd) || 'working'; }
+    tipArgs = [sid, agent, unit];
+    loadStats(sid);
     tip.innerHTML = `<div class="t">${esc(meta.title || sid.slice(0, 6))}${agent !== 'main' ? ' · subagent' : ''}</div>`
       + `<div class="p">${esc(baseName(meta.cwd))}</div>`
       + `<div class="a ${cls}">${esc(act)}</div>`
+      + statsHtml(sid)
       + '<div class="hint">click → open live view</div>';
     tip.style.display = 'block';
     const p = unit.getGlobalPosition(); const rect = app.canvas.getBoundingClientRect();
@@ -210,7 +248,7 @@ export async function startBoard(mountEl) {
   try {
     await Promise.all(Object.entries(UNIT.anims).map(async ([anim, meta]) => {
       animTex[anim] = {};
-      const dirs = meta.dirList || (meta.dirs === 8 ? DIRS8 : ['south']);
+      const dirs = meta.dirList;
       await Promise.all(dirs.map(async (dir) => {
         const urls = Array.from({ length: meta.frames }, (_, i) => framePath(anim, dir, i));
         animTex[anim][dir] = await Promise.all(urls.map((u) => Assets.load(u)));
@@ -224,8 +262,6 @@ export async function startBoard(mountEl) {
 
   // Spiral-cell slot allocator (reuses freed slots so positions don't drift outward over time).
   const cellAlloc = makeCellAllocator(spiralCells);
-  const takeCell = (sid) => cellAlloc.take(sid);
-  const releaseCell = (sid) => cellAlloc.release(sid);
 
   // Filter box (feature #6): substring match over title + folder; empty = show all.
   let filterText = '';
@@ -236,7 +272,7 @@ export async function startBoard(mountEl) {
       const meta = sessionMeta.get(sid) || {};
       const hidden = filterText && !matchesFilter(meta.title, meta.cwd);
       b._filterHidden = hidden;
-      b.badge.visible = b.badge.visible && !hidden;
+      b.badge.visible = b._stuck && !hidden;
       b.container._target = hidden ? 0.06 : (b._dormant ? 0.4 : 1);
     }
   }
@@ -244,11 +280,12 @@ export async function startBoard(mountEl) {
   // World allocation (unique world per active session; freed slots reused) + walkable-floor
   // geometry — both are pure and live in their own modules (alloc.mjs / floor.mjs), unit-tested.
   const worldAlloc = makeWorldAllocator(WORLDS); // random among unused worlds, then random among all
-  const assignWorld = (sid) => worldAlloc.assign(sid);
-  const freeWorld = (sid) => worldAlloc.free(sid);
-  const { randomFloorPoint } = makeFloor(WORLD_W);
+  const floor = makeFloor(WORLD_W);
+  // Robots keep ~this far apart on a platform (pure logic in floor.mjs, simulated in tests).
+  const spacing = makeSpacing(floor, WORLD_W * 0.085);
+  const clearFloorPoint = (peers, self) => spacing.clearPoint(peers && peers.values(), self);
 
-  function makeUnit(isMain, teamColor, sid, key) {
+  function makeUnit(isMain, teamColor, sid, key, peers) {
     const c = new Container();
     const accent = new Graphics(); // ground ring under the unit, tinted per state
     const uiScale = (isMain ? 0.95 : 0.72) * (WORLD_W / 320); // small; scales with world size
@@ -293,7 +330,7 @@ export async function startBoard(mountEl) {
       tLines.push(ln);
     }
     c.addChild(accent, core, ...tLines);
-    const start = randomFloorPoint();
+    const start = clearFloorPoint(peers, null);
     c.position.set(start.x, start.y);
     Object.assign(c, {
       _core: core, _accent: accent, _asp: asprite, _tLines: tLines, _tHist: [], _tLast: null,
@@ -302,8 +339,9 @@ export async function startBoard(mountEl) {
       _lastTool: null, _lastCmd: null,
       _px: start.x, _py: start.y, _tx: start.x, _ty: start.y, _facing: Math.PI / 2, _moving: false,
       _dwell: 400 + Math.random() * 2000, _working: false, _workUntil: 0, _workDir: 'south', _hovered: false,
+      _peers: peers,                                   // the other robots on this platform (spacing)
     });
-    // hover this robot → its conversation (subagent → subagent text); click → resume in Warp.
+    // hover this robot → quick tooltip; click → its live mirror (subagent → its own run).
     // Hovering FREEZES the robot AND its platform's bob (see ticker) so it can't slip out from
     // under the cursor — that slipping was what made the panel flicker/disappear.
     c.eventMode = 'static';
@@ -325,10 +363,10 @@ export async function startBoard(mountEl) {
   }
 
   function makeBase(sid) {
-    const world = assignWorld(sid);       // this session's floating world (unique among active sessions)
+    const world = worldAlloc.assign(sid);       // this session's floating world (unique among active sessions)
     const color = world.color;            // units inherit their world's accent so they read as one base
     const container = new Container();
-    const cell = takeCell(sid);           // lowest free spiral slot (reused when sessions end)
+    const cell = cellAlloc.take(sid);           // lowest free spiral slot (reused when sessions end)
     const { x, y } = axialToPixel(cell.q, cell.r, LAYOUT_SIZE);
     container.position.set(x, y);
 
@@ -379,14 +417,14 @@ export async function startBoard(mountEl) {
     board.addChild(container);
 
     // Click the world to focus/zoom it (feature #5). The backdrop is the click target;
-    // robots sit on top with their own handlers, so clicking a robot still resumes it.
+    // robots sit on top with their own handlers, so clicking a robot still opens its mirror.
     base.eventMode = 'static'; base.cursor = 'zoom-in';
     // Confine clicks to the platform ellipse — the PNG's transparent margins otherwise make a
     // full-rect hit-box that overlaps neighbours (worlds sit close) and could steal robot clicks.
     base.hitArea = new Ellipse(0, WORLD_W * 0.04, WORLD_W * 0.34, WORLD_W * 0.2);
     base.on('pointertap', () => focusOn(container));
 
-    const b = { container, base, glow, flash, badge, label, unitsLayer, color, units: new Map(), target: 1, removing: false };
+    const b = { container, base, glow, flash, badge, label, unitsLayer, color, units: new Map() };
     // _homeY + _phase drive the gentle floating bob in the ticker (offset per world so they desync)
     Object.assign(container, { _target: 1, _removing: false, _homeY: y, _phase: Math.random() * Math.PI * 2, _attention: false, _flash: null });
     return b;
@@ -414,7 +452,8 @@ export async function startBoard(mountEl) {
       const workers = w.workers || {};
       b.container._working = (w.main && w.main.state && w.main.state.startsWith('working'))
         || Object.values(workers).some((k) => k && k.state && k.state.startsWith('working'));
-      b.badge.visible = !!w.stuck && !hidden;                 // ⚠ stuck badge
+      b._stuck = !!w.stuck;
+      b.badge.visible = b._stuck && !hidden;                  // ⚠ stuck badge
       // Fire a flash exactly once per new finish/error timestamp from the server.
       if (w.finishedAt && w.finishedAt !== b._lastFinish) { b._lastFinish = w.finishedAt; b.container._flash = { color: 0x27c93f, until: performance.now() + 850 }; }
       if (w.lastError && w.lastError !== b._lastErrorTs) { b._lastErrorTs = w.lastError; b.container._flash = { color: 0xff5f56, until: performance.now() + 1200 }; }
@@ -430,7 +469,7 @@ export async function startBoard(mountEl) {
       // add / update — position is driven by the wander system in the ticker, not here
       for (const [key, unit] of desired) {
         let u = b.units.get(key);
-        if (!u) { u = makeUnit(key === 'main', b.color, sid, key); u._target = 1; b.unitsLayer.addChild(u); units.add(u); b.units.set(key, u); }
+        if (!u) { u = makeUnit(key === 'main', b.color, sid, key, b.units); u._target = 1; b.unitsLayer.addChild(u); units.add(u); b.units.set(key, u); }
         const st = (unit && unit.state) || 'idle';
         u._state = st;
         u._motion = motionFor(st);
@@ -449,7 +488,7 @@ export async function startBoard(mountEl) {
         // destroy({children:true}) when it finishes fading — avoids operate-after-destroy.
         for (const u of b.units.values()) units.delete(u);
         b.units.clear();
-        bases.delete(sid); leftoverBases.add(b); freeWorld(sid); releaseCell(sid); sessionMeta.delete(sid);
+        bases.delete(sid); leftoverBases.add(b); worldAlloc.free(sid); cellAlloc.release(sid); sessionMeta.delete(sid);
       }
     }
   }
@@ -504,9 +543,10 @@ export async function startBoard(mountEl) {
           }
         } else {
           u._dwell -= dt;
-          if (u._dwell <= 0) { const t = randomFloorPoint(); u._tx = t.x; u._ty = t.y; u._moving = true; }
+          if (u._dwell <= 0) { const t = clearFloorPoint(u._peers, u); u._tx = t.x; u._ty = t.y; u._moving = true; }
         }
       }
+      if (u._peers) spacing.separate(u, u._peers.values());   // personal space (floor.mjs)
       u.position.set(u._px, u._py);
       u.zIndex = u._py;                      // depth sort: front units draw over back units
 
@@ -603,5 +643,18 @@ export async function startBoard(mountEl) {
     }
   });
 
-  return { update, app, setFilter };
+  // Screen point (CSS px) just above a session's platform, tracking pan/zoom/bob — the permission
+  // card anchors here so it pops up next to the robot that asked. null if the session isn't drawn.
+  function anchorOf(sid) {
+    const b = bases.get(sid);
+    if (!b) return null;
+    // From the platform's REST position (_homeY), not its floating bob — a card that bobs under the
+    // mouse is hard to click.
+    const p = board.toGlobal({ x: b.container.x, y: b.container._homeY - WORLD_W * 0.28 });
+    const r = app.canvas.getBoundingClientRect();
+    return { x: r.left + p.x, y: r.top + p.y };
+  }
+  const focusSession = (sid) => { const b = bases.get(sid); if (b) focusOn(b.container); };
+
+  return { update, app, setFilter, anchorOf, focusSession };
 }

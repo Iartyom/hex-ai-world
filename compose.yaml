@@ -1,0 +1,17 @@
+# docker compose up -d   →  http://localhost:8787
+services:
+  hexworld:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"          # this machine only — never 0.0.0.0 (transcripts hold your code)
+    volumes:
+      # Transcripts, read-only, at the SAME absolute path the hooks report (e.g. /Users/you/.claude/...).
+      - ${HOME}/.claude:${HOME}/.claude:ro
+      - hexworld-data:/data            # saved sessions (survive container restarts)
+    environment:
+      CLAUDE_CONFIG_DIR: ${HOME}/.claude
+      # HEX_WORLD_ANIM: "1"            # animated platforms
+      # HEX_WORLD_PERMISSION_WAIT: "60" # cap how long a card may hold a prompt (seconds)
+    restart: unless-stopped
+volumes:
+  hexworld-data:

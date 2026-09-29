@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyEvent, watchdog, unitState, worldStuck, serializeUnit, newUnit, parseTranscript,
-  pickToolInput, resultText, cmdSummary,
+  pickToolInput, resultText, cmdSummary, markPre,
   STUCK_AFTER, THINK_MAX, WORKER_GONE_AFTER, WORLD_REMOVE_AFTER,
 } from '../server/state.mjs';
 
@@ -196,4 +196,86 @@ test('pickToolInput/resultText/cmdSummary basics', () => {
   assert.deepEqual(Object.keys(e).sort(), ['file_path', 'new_string', 'old_string']);
   assert.equal(resultText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]), 'a\nb');
   assert.equal(cmdSummary('Bash', { command: 'npm test' }), 'npm test');
+});
+
+test('toSaved/fromSaved: round-trips sessions, drops in-flight state and expired worlds', async () => {
+  const { toSaved, fromSaved, WORLD_REMOVE_AFTER } = await import('../server/state.mjs');
+  const worlds = {};
+  applyEvent(worlds, 'SessionStart', { session_id: 's1', cwd: '/p', transcript_path: '/p/t.jsonl' });
+  applyEvent(worlds, 'PreToolUse', { session_id: 's1', tool_name: 'Bash', tool_use_id: 'u1', tool_input: { command: 'npm test' } });
+  applyEvent(worlds, 'PreToolUse', { session_id: 's1', agent_id: 'a1', tool_name: 'Read', tool_use_id: 'u2' });
+  applyEvent(worlds, 'Notification', { session_id: 's1', notification_type: 'permission_prompt', message: 'ok?' });
+  const saved = JSON.parse(JSON.stringify(toSaved(worlds)));     // must survive JSON
+  const back = fromSaved(saved, {}, worlds.s1.lastSeen + 1000);
+  assert.equal(back.s1.cwd, '/p');
+  assert.equal(back.s1.attention.reason, 'permission');
+  assert.equal(back.s1.main.lastCmd, 'npm test');
+  assert.equal(back.s1.main.pending.size, 0, 'in-flight tools not restored');
+  assert.deepEqual(Object.keys(back.s1.workers), [], 'subagents not restored');
+  assert.equal(unitState(back.s1.main), 'idle');
+  assert.deepEqual(fromSaved(saved, {}, worlds.s1.lastSeen + WORLD_REMOVE_AFTER + 1), {}, 'expired world dropped');
+});
+
+test('markPre: a tool with no summary field does not inherit the previous command', () => {
+  const u = newUnit(0);
+  markPre(u, 't1', 'Bash', { command: 'npm test' }, 1);
+  markPre(u, 't2', 'mcp__some__tool', { foo: 1 }, 2);
+  assert.equal(u.lastTool, 'mcp__some__tool');
+  assert.equal(u.lastCmd, null);
+});
+
+test('activity timeline: classifies blocked/working/thinking/idle, buckets it, survives save/restore', async () => {
+  const { activityOf, recordActivity, timelineSeries, toSaved, fromSaved, BUCKET_MS } = await import('../server/state.mjs');
+  const worlds = {};
+  applyEvent(worlds, 'SessionStart', { session_id: 't', cwd: '/p' });
+  const w = worlds.t;
+  const t0 = Math.ceil(Date.now() / BUCKET_MS) * BUCKET_MS;       // start of a fresh bucket
+  assert.equal(activityOf(w), 'idle');
+  recordActivity(w, t0, 1000);
+  applyEvent(worlds, 'UserPromptSubmit', { session_id: 't' });
+  assert.equal(activityOf(w), 'thinking');
+  recordActivity(w, t0 + 1000, 2000);
+  applyEvent(worlds, 'PreToolUse', { session_id: 't', agent_id: 'a', tool_name: 'Bash', tool_use_id: 'x' });
+  assert.equal(activityOf(w), 'working', 'a subagent tool counts');
+  recordActivity(w, t0 + 3000, 3000);
+  applyEvent(worlds, 'Notification', { session_id: 't', notification_type: 'permission_prompt' });
+  assert.equal(activityOf(w), 'blocked');
+  recordActivity(w, t0 + 6000, 4000);
+  const s = timelineSeries(w, t0 + 7000, 24);
+  assert.deepEqual([s.idle[23], s.thinking[23], s.working[23], s.blocked[23]], [1000, 2000, 3000, 4000]);
+  const back = fromSaved(JSON.parse(JSON.stringify(toSaved(worlds))), {}, t0 + 7000);
+  assert.equal(timelineSeries(back.t, t0 + 7000, 24).blocked[23], 4000);
+  w.status = 'dormant'; recordActivity(w, t0 + 8000, 5000);
+  assert.equal(timelineSeries(w, t0 + 8000, 24).idle[23], 1000, 'ended sessions do not accrue');
+});
+
+test('only live sessions: SessionEnd removes the world; a dead claude process removes it too', async () => {
+  const { watchdog, toSaved, fromSaved } = await import('../server/state.mjs');
+  const worlds = {};
+  applyEvent(worlds, 'SessionStart', { session_id: 'a' });
+  applyEvent(worlds, 'SessionStart', { session_id: 'b' });
+  applyEvent(worlds, 'SessionStart', { session_id: 'c' });
+  applyEvent(worlds, 'SessionEnd', { session_id: 'a' });
+  assert.equal(worlds.a, undefined, 'exited session is gone at once');
+  worlds.b.pid = 111; worlds.c.pid = 222;
+  assert.equal(fromSaved(JSON.parse(JSON.stringify(toSaved(worlds))), {}).b.pid, 111, 'pid survives a restart');
+  const changed = watchdog(worlds, Date.now(), (pid) => pid !== 111);
+  assert.ok(changed);
+  assert.deepEqual(Object.keys(worlds), ['c'], 'closed terminal (dead pid) is gone; live one stays');
+});
+
+test('reconcilePids: extra pid-less sessions in a folder are dead; a 1:1 match adopts the pid', async () => {
+  const { reconcilePids } = await import('../server/state.mjs');
+  const w = (cwd, lastSeen, pid) => ({ cwd, lastSeen, pid, main: newUnit(0), workers: {} });
+  const worlds = {
+    live: w('/a', 100, 7),          // known pid 7 (claims one of /a's processes)
+    newer: w('/a', 90), older: w('/a', 50),   // 2 pid-less in /a, but only 1 unclaimed process there
+    solo: w('/b', 10),              // 1 pid-less in /b, exactly 1 process → adopt
+    gone: w('/c', 10),              // no claude process in /c at all → dead
+  };
+  const changed = reconcilePids(worlds, new Map([['/a', [7, 8]], ['/b', [9]]]));
+  assert.ok(changed);
+  assert.deepEqual(Object.keys(worlds).sort(), ['live', 'newer', 'solo']);
+  assert.equal(worlds.solo.pid, 9, 'sole match adopts the pid');
+  assert.equal(worlds.newer.pid, undefined, 'ambiguous → keep, learn the pid from its next event');
 });

@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>Hex-World — Agent Map (Phase 2)</title>
+<title>Hex-World</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   :root { color-scheme: dark; }
@@ -24,9 +24,67 @@
   #legend b { color: #cdd3e0; font-weight: 600; }
   #legend .k { display: inline-flex; align-items: center; gap: 6px; }
   #legend .sw { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
-  #debug { position: fixed; top: 40px; left: 12px; right: 12px; bottom: 12px; margin: 0;
-           padding: 10px; background: rgba(10,13,20,.9); border: 1px solid #232a3a; border-radius: 8px;
-           overflow: auto; white-space: pre-wrap; color: #b8c0d4; }
+  #debug { position: fixed; top: 40px; left: 12px; right: 12px; bottom: 12px; z-index: 70;
+           padding: 12px 14px; background: rgba(10,13,20,.95); border: 1px solid #232a3a; border-radius: 8px;
+           overflow: auto; color: #b8c0d4; }
+  #raw { margin: 14px 0 0; white-space: pre-wrap; color: #8b94a8; border-top: 1px solid #1e2636; padding-top: 10px; }
+  #summary h3 { margin: 0 0 8px; font-size: 12px; color: #eaeef6; font-weight: 600; }
+  #summary .tiles { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 10px; }
+  #summary .tile .v { font-size: 20px; color: #eaeef6; font-weight: 600; }
+  #summary .tile .l { color: #6b7488; font-size: 11px; }
+  #summary .ax { display: flex; justify-content: space-between; color: #465067; font-size: 10px; width: 420px; max-width: 100%; }
+  #summary table { border-collapse: collapse; margin-top: 12px; }
+  #summary th { text-align: left; color: #6b7488; font-weight: 500; padding: 3px 14px 3px 0; border-bottom: 1px solid #1e2636; }
+  #summary td { padding: 4px 14px 4px 0; border-bottom: 1px solid #141b27; vertical-align: middle; }
+  #summary td.n { text-align: right; font-variant-numeric: tabular-nums; color: #cdd3e0; }
+  #summary .muted { color: #5a6577; }
+  #summary .lg { display: inline-flex; align-items: center; gap: 5px; margin-right: 12px; color: #8b94a8; }
+  #summary .lg i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  #summary .sec { margin-top: 18px; }
+  /* Permission cards (top-right): answer a blocked session's prompt without finding its terminal. */
+  /* Cards float next to the world of the session that asked (positioned every frame from the renderer). */
+  #approvals { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
+  .ap { position: absolute; width: 380px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto;
+        pointer-events: auto; background: #1a1408; border: 1px solid #6a4d1c; border-radius: 10px; padding: 9px 11px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.55); }
+  .ap::after { content: ''; position: absolute; left: var(--tail, 50%); bottom: -7px; width: 12px; height: 12px; margin-left: -6px;
+               background: #1a1408; border-right: 1px solid #6a4d1c; border-bottom: 1px solid #6a4d1c; transform: rotate(45deg); }
+  .ap.below::after { top: -7px; bottom: auto; transform: rotate(225deg); }
+  .ap .h { color: #ffcf7a; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; cursor: zoom-in; }
+  .ap .h span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ap .h i { color: #8a7a5a; font-style: normal; font-weight: 400; flex: 0 0 auto; }
+  .ap .c { margin: 6px 0 8px; color: #e8dcc0; background: #0c0a05; border-radius: 6px; padding: 5px 7px; white-space: pre-wrap; word-break: break-all; max-height: 90px; overflow: auto; }
+  .ap button { font: inherit; border-radius: 7px; padding: 3px 12px; cursor: pointer; border: 1px solid; margin-right: 6px; }
+  .ap .al { background: #10351f; color: #7fd69a; border-color: #1f6a3c; }
+  .ap .dn { background: #351010; color: #ff9d95; border-color: #6a1f1f; }
+  .ap .note { color: #8a7a5a; font-size: 11px; }
+  .ap .ds { color: #b5a883; margin: 4px 0 0; }
+  .ap .q { margin-top: 9px; }
+  .ap .q .qh { display: inline-block; background: #3a2a10; color: #ffcf7a; border-radius: 5px; padding: 0 6px; font-size: 10.5px; margin-bottom: 3px; }
+  .ap .q .qt { color: #f1e6cc; white-space: pre-wrap; margin-bottom: 5px; }
+  .ap .opt { display: block; width: 100%; text-align: left; margin: 0 0 4px; background: #0c0a05; color: #e8dcc0; border-color: #3a2e18; }
+  .ap .opt b { font-weight: 600; } .ap .opt small { display: block; color: #9a8d6e; font-size: 11px; margin-top: 1px; white-space: normal; }
+  .ap .opt.on { background: #10351f; border-color: #2f8a52; color: #bff0cf; }
+  .ap .other { width: 100%; box-sizing: border-box; margin: 0 0 2px; background: #0c0a05; color: #e8dcc0; border: 1px solid #3a2e18;
+               border-radius: 7px; padding: 3px 8px; font: inherit; outline: none; }
+  .ap .foot { margin-top: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  .ap .tm { background: #161b28; color: #9fb0cc; border-color: #2a3346; }
+  /* One question at a time, Claude Code style: a tab per question + a Submit tab. */
+  .ap .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .ap .tab { font: inherit; font-size: 11px; background: #0c0a05; color: #9a8d6e; border: 1px solid #3a2e18; border-radius: 6px; padding: 1px 8px; cursor: pointer; }
+  .ap .tab.cur { background: #3a2a10; color: #ffcf7a; border-color: #8a6a2c; }
+  /* The ✓ always takes its space (just invisible) so answering a tab doesn't shift the row sideways. */
+  .ap .tab::before { content: '✓ '; color: #7fd69a; visibility: hidden; }
+  .ap .tab.done::before { visibility: visible; }
+  /* Every tab sits in the SAME grid cell: the card is always as tall as its tallest tab, so switching
+     tabs never changes its height — the card is pinned by its bottom edge, so a height change jumped it. */
+  .ap .qs { display: grid; }
+  .ap .q, .ap .rv { grid-area: 1 / 1; visibility: hidden; } .ap .q.cur, .ap .rv.cur { visibility: visible; }
+  .ap .rv .row { margin: 6px 0; } .ap .rv .row .qq { color: #9a8d6e; font-size: 11px; } .ap .rv .row .aa { color: #f1e6cc; }
+  .ap .rv .row .aa.miss { color: #e88b84; font-style: italic; }
+  .ap .opt .k { color: #8a7a5a; margin-right: 6px; }
+  .ap .keys { color: #6b5d3e; font-size: 10.5px; margin-left: auto; }
+  .ap button:disabled { opacity: .45; cursor: default; }
   /* Connection-lost banner: the board freezes on a dropped socket, so make "stale" impossible to
      miss. Centered top, amber, hidden until the WS closes and shown until it reconnects. */
   #offline { position: fixed; top: 0; left: 0; right: 0; z-index: 80; display: none;
@@ -50,15 +108,23 @@
   <span class="k"><span class="sw" style="background:#27c93f"></span> finished</span>
   <span class="k"><span class="sw" style="background:#ff5f56"></span> error</span>
 </div>
-<pre id="debug" hidden></pre>
+<div id="debug" hidden><div id="summary"><span class="muted">loading summary…</span></div><pre id="raw"></pre></div>
+<div id="approvals"></div>
 
 <script type="module">
   // Phase 2: render the live board with Pixi; keep the GATE-1 raw-state view behind `d`.
   import { startBoard } from './render.mjs';
+  import { barChart, stackedBars, stateLegend, STATE_COLORS, SERIES, fmtUsd, fmtDur } from './charts.mjs';
+  import { esc, baseName } from './pure.mjs';
 
   const statusEl = document.getElementById('status');
   const offlineEl = document.getElementById('offline');
   const debugEl = document.getElementById('debug');
+  const rawEl = document.getElementById('raw');
+  const summaryEl = document.getElementById('summary');
+  const approvalsEl = document.getElementById('approvals');
+  let runtime = {};
+  try { runtime = await (await fetch('/config/runtime.json')).json(); } catch { /* defaults */ }
   const countEl = document.getElementById('count');
   const filterEl = document.getElementById('filter');
   const board = await startBoard();
@@ -75,15 +141,186 @@
   let lastWorlds = {};
   addEventListener('keydown', (e) => {
     if (e.target === filterEl) return; // don't hijack 'd' while typing in the filter box
-    if (e.key === 'd') { showDebug = !showDebug; debugEl.hidden = !showDebug; renderDebug(); }
+    if (e.key === 'd') { showDebug = !showDebug; debugEl.hidden = !showDebug; renderDebug(); if (showDebug) loadSummary(); }
   });
+  // 'd' also shows where time and money went: last 14 days across ALL transcripts (not just live
+  // sessions), per day and per project. Refreshed every 30s while open.
+  setInterval(() => { if (showDebug) loadSummary(); }, 30000);
+  async function loadSummary() {
+    let d;
+    try { d = await (await fetch('/summary?days=14')).json(); } catch { summaryEl.innerHTML = '<span class="muted">summary unavailable</span>'; return; }
+    if (!d || !d.days) return;
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    const label = (day) => new Date(day + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const titles = d.days.map((day, i) => `${label(day)} · ${fmtUsd(d.total.cost[i])} · ${d.total.tools[i]} tools · ${fmtDur(d.total.activeMin[i] * 60000)} active`);
+    const today = d.days.length - 1;
+    const rows = d.projects.slice(0, 20).map((p) => `<tr><td title="${esc(p.cwd)}">${esc(baseName(p.cwd) || p.cwd)}</td>`
+      + `<td>${barChart(p.costByDay, { w: 140, h: 16, color: SERIES.cost, titles: p.costByDay.map((c, i) => `${label(d.days[i])} · ${fmtUsd(c)}`) })}</td>`
+      + `<td class="n">${fmtUsd(p.cost)}</td><td class="n">${fmtDur(p.activeMs)}</td><td class="n">${p.tools}</td><td class="n">${p.sessions}</td></tr>`).join('');
+    summaryEl.innerHTML = `<h3>Last 14 days — all Claude Code sessions${d.costPartial ? ' <span class="muted">(some models unpriced)</span>' : ''}</h3>`
+      + `<div class="tiles">`
+      + `<div class="tile"><div class="v">${fmtUsd(sum(d.total.cost))}</div><div class="l">API-price cost</div></div>`
+      + `<div class="tile"><div class="v">${fmtUsd(d.total.cost[today])}</div><div class="l">today</div></div>`
+      + `<div class="tile"><div class="v">${fmtDur(sum(d.total.activeMin) * 60000)}</div><div class="l">active time</div></div>`
+      + `<div class="tile"><div class="v">${sum(d.total.tools)}</div><div class="l">tool calls</div></div></div>`
+      + `<div class="muted" style="margin-bottom:3px">cost per day (hover a bar)</div>`
+      + barChart(d.total.cost, { w: 420, h: 60, color: SERIES.cost, titles, highlightLast: true })
+      + `<div class="ax"><span>${label(d.days[0])}</span><span>today</span></div>`
+      + (rows ? `<table><tr><th>project</th><th>cost / day</th><th>cost</th><th>active</th><th>tools</th><th>sessions</th></tr>${rows}</table>` : '<div class="muted">no activity</div>')
+      + liveHtml(d);
+  }
+  // Live sessions, last 2h: what each agent spent its time doing (server-sampled every 2s), and the
+  // headline "time agents sat waiting on you" — blocked on a prompt/question you hadn't answered.
+  function liveHtml(d) {
+    if (!d.live || !d.live.length) return '';
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    let waited = 0, busy = 0, tracked = 0;
+    const rows = d.live.map((s) => {
+      const tl = s.timeline, t = { w: sum(tl.working), th: sum(tl.thinking), b: sum(tl.blocked), i: sum(tl.idle) };
+      const all = t.w + t.th + t.b + t.i; waited += t.b; busy += t.w + t.th; tracked += all;
+      const titles = tl.working.map((_, i) => `${clock(tl.start + i * tl.step)} · working ${fmtDur(tl.working[i])} · thinking ${fmtDur(tl.thinking[i])} · waiting on you ${fmtDur(tl.blocked[i])} · idle ${fmtDur(tl.idle[i])}`);
+      const layers = ['working', 'thinking', 'blocked'].map((k) => ({ values: tl[k], color: STATE_COLORS[k] }));
+      return `<tr><td title="${esc(s.cwd || '')}">${esc(s.title || baseName(s.cwd) || s.sid.slice(0, 8))}${s.status === 'dormant' ? ' <span class="muted">⏻</span>' : ''}</td>`
+        + `<td>${stackedBars(layers, tl.step, { w: 240, h: 18, titles })}</td>`
+        + `<td class="n">${all ? Math.round(100 * (t.w + t.th) / all) + '%' : '—'}</td><td class="n">${fmtDur(t.w)}</td><td class="n">${fmtDur(t.b)}</td></tr>`;
+    }).join('');
+    return `<div class="sec"><h3>Live sessions — last 2 hours</h3>`
+      + `<div class="tiles"><div class="tile"><div class="v">${tracked ? Math.round(100 * busy / tracked) + '%' : '—'}</div><div class="l">agents busy</div></div>`
+      + `<div class="tile"><div class="v">${fmtDur(waited)}</div><div class="l">waited on you</div></div></div>`
+      + `<div>${stateLegend()}<span class="lg"><i style="background:transparent;border:1px solid #2a3346"></i>idle</span></div>`
+      + `<table><tr><th>session</th><th>activity · 5-min (hover)</th><th>busy</th><th>working</th><th>waiting on you</th></tr>${rows}</table>`
+      + `<div class="muted" style="margin-top:4px">sampled by the server every 2s — only covers time it was running</div></div>`;
+  }
+  // Permission cards: one per session whose PermissionRequest hook is holding for a click. Plain
+  // tool prompts get Allow / Deny; AskUserQuestion (Claude asking you) gets its questions + options.
+  // "Terminal" releases the hook at once so the normal prompt shows without waiting out the timer.
+  let approvalsKey = '';
+  const cardState = new Map();                 // id -> { sid, until, picks: [Set], multi: [bool], qs }
+  function renderApprovals(worlds) {
+    const cards = Object.entries(worlds || {}).filter(([, w]) => w.permission);
+    // Rebuild only when the set of prompts changes — other sessions broadcast constantly, and
+    // replacing the DOM between mousedown and click would swallow the click (and the picks).
+    const key = cards.map(([, w]) => w.permission.id).join(',');
+    if (key === approvalsKey) return;
+    approvalsKey = key;
+    for (const id of [...cardState.keys()]) if (!key.includes(id)) cardState.delete(id);
+    approvalsEl.innerHTML = cards.map(([sid, w]) => {
+      const p = w.permission;
+      if (!cardState.has(p.id)) cardState.set(p.id, { sid, until: runtime.permissionWait ? p.since + runtime.permissionWait : 0,
+        qs: p.questions || null, picks: (p.questions || []).map(() => new Set()), multi: (p.questions || []).map((q) => q.multiSelect) });
+      const head = `<div class="h" title="show this session"><span>🔔 ${esc(w.title || baseName(w.cwd) || sid.slice(0, 8))}</span><i>${p.questions ? 'asks you' : esc(p.tool)}</i></div>`;
+      const tabs = p.questions ? `<div class="tabs">${p.questions.map((q, qi) => `<button class="tab" data-t="${qi}">${esc(q.header || `Q${qi + 1}`)}</button>`).join('')}`
+        + `<button class="tab" data-t="${p.questions.length}">Submit</button></div>` : '';
+      const body = p.questions
+        ? tabs + '<div class="qs">' + p.questions.map((q, qi) => `<div class="q" data-q="${qi}">`
+            + `<div class="qt" style="margin-top:8px">${esc(q.question)}${q.multiSelect ? ' <span class="note">(pick any)</span>' : ''}</div>`
+            + q.options.map((o, oi) => `<button class="opt" data-o="${oi}"><b><span class="k">${oi + 1}.</span>${esc(o.label)}</b>${o.description ? `<small>${esc(o.description)}</small>` : ''}</button>`).join('')
+            + `<input class="other" placeholder="Other… (type your own answer)" /></div>`).join('')
+            + '<div class="rv"></div></div>'
+        : (p.summary ? `<div class="c">${esc(p.summary)}</div>` : '') + (p.description ? `<div class="ds">${esc(p.description)}</div>` : '');
+      const btns = p.questions
+        ? '<button class="al send" disabled>Send answers</button><span class="keys">←/→ tabs · 1-9 pick</span>'
+        : '<button class="al">Allow</button><button class="dn">Deny</button>';
+      return `<div class="ap" data-id="${esc(p.id)}">${head}${body}<div class="foot">${btns}<button class="tm" title="show the normal prompt in the terminal now">Terminal</button><span class="note"></span></div></div>`;
+    }).join('');
+    for (const card of approvalsEl.children) { const st = cardState.get(card.dataset.id); if (st && st.qs) showTab(card, st.cur || 0); }
+  }
+  // Show tab t (a question, or the Submit review when t === number of questions).
+  function showTab(card, t) {
+    const st = cardState.get(card.dataset.id); if (!st || !st.qs) return;
+    st.cur = Math.max(0, Math.min(st.qs.length, t));
+    card.querySelectorAll('.tab').forEach((b) => {
+      const i = +b.dataset.t;
+      b.classList.toggle('cur', i === st.cur);
+      b.classList.toggle('done', i < st.qs.length && !!answerOf(card, st, i));
+    });
+    card.querySelectorAll('.q').forEach((q) => q.classList.toggle('cur', +q.dataset.q === st.cur));
+    const rv = card.querySelector('.rv');
+    rv.classList.toggle('cur', st.cur === st.qs.length);
+    if (st.cur === st.qs.length) {
+      rv.innerHTML = st.qs.map((q, qi) => { const a = answerOf(card, st, qi);
+        return `<div class="row"><div class="qq">${esc(q.header || `Q${qi + 1}`)} · ${esc(q.question)}</div><div class="aa ${a ? '' : 'miss'}">${a ? '→ ' + esc(a) : 'not answered yet'}</div></div>`; }).join('');
+    }
+    refreshSend(card);
+  }
+  // Answer for question qi: the picked labels, or the typed "Other" text.
+  function answerOf(card, st, qi) {
+    const other = card.querySelector(`.q[data-q="${qi}"] .other`).value.trim();
+    if (other) return other;
+    const labels = [...st.picks[qi]].sort((a, b) => a - b).map((oi) => st.qs[qi].options[oi].label);
+    return labels.length ? labels.join(', ') : null;   // ponytail: multi-select joined with ", " (Claude Code's own format unverified)
+  }
+  function refreshSend(card) {
+    const st = cardState.get(card.dataset.id), send = card.querySelector('.send');
+    if (st && send) send.disabled = !st.qs.every((_, qi) => answerOf(card, st, qi));
+  }
+  approvalsEl.addEventListener('input', (e) => {
+    const card = e.target.closest('.ap'); if (!card) return;
+    const st = cardState.get(card.dataset.id);
+    if (st && st.qs && e.target.value.trim()) { const qi = +e.target.closest('.q').dataset.q; st.picks[qi].clear(); card.querySelectorAll(`.q[data-q="${qi}"] .opt`).forEach((b) => b.classList.remove('on')); }
+    if (st && st.qs) showTab(card, st.cur); else refreshSend(card);
+  });
+  // Keyboard, like Claude Code's picker: ←/→ switch tabs, 1-9 pick an option, Enter on Submit sends.
+  // Applies to the first question card; ignored while typing (Other / filter box).
+  addEventListener('keydown', (e) => {
+    const card = [...approvalsEl.children].find((c) => cardState.get(c.dataset.id)?.qs);
+    if (!card || e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const st = cardState.get(card.dataset.id);
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); showTab(card, st.cur + (e.key === 'ArrowRight' ? 1 : -1)); }
+    else if (/^[1-9]$/.test(e.key) && st.cur < st.qs.length) { const b = card.querySelector(`.q[data-q="${st.cur}"] .opt[data-o="${+e.key - 1}"]`); if (b) { e.preventDefault(); b.click(); } }
+    else if (e.key === 'Enter' && st.cur === st.qs.length) { const s2 = card.querySelector('.send'); if (!s2.disabled) { e.preventDefault(); s2.click(); } }
+  }, true);
+  approvalsEl.addEventListener('click', async (e) => {
+    const card = e.target.closest('.ap'); if (!card) return;
+    const st = cardState.get(card.dataset.id);
+    if (e.target.closest('.h')) { board.focusSession(st && st.sid); return; }
+    const opt = e.target.closest('.opt');
+    if (opt && st) {
+      const qi = +opt.closest('.q').dataset.q, oi = +opt.dataset.o, set = st.picks[qi];
+      if (st.multi[qi]) set.has(oi) ? set.delete(oi) : set.add(oi); else { const had = set.has(oi); set.clear(); if (!had) set.add(oi); }
+      opt.closest('.q').querySelectorAll('.opt').forEach((b) => b.classList.toggle('on', set.has(+b.dataset.o)));
+      if (!st.multi[qi] && set.size) card.querySelector(`.q[data-q="${qi}"] .other`).value = '';
+      showTab(card, !st.multi[qi] && set.size ? qi + 1 : qi);   // single choice → next tab, like Claude Code
+      return;
+    }
+    const tab = e.target.closest('.tab');
+    if (tab && st) { showTab(card, +tab.dataset.t); return; }
+    const btn = e.target.closest('button'); if (!btn || btn.disabled) return;
+    const payload = { id: card.dataset.id };
+    if (btn.classList.contains('tm')) payload.behavior = 'terminal';
+    else if (btn.classList.contains('dn')) payload.behavior = 'deny';
+    else if (btn.classList.contains('send') && st) { payload.behavior = 'allow'; payload.answers = Object.fromEntries(st.qs.map((q, qi) => [q.question, answerOf(card, st, qi)])); }
+    else if (btn.classList.contains('al')) payload.behavior = 'allow';
+    else return;
+    card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try { await fetch('/permission/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }); } catch { /* next state repaints */ }
+  });
+  // Every frame: pin each card above its session's world (clamped on-screen), tick the countdown.
+  (function placeCards() {
+    for (const card of approvalsEl.children) {
+      const st = cardState.get(card.dataset.id); if (!st) continue;
+      const a = board.anchorOf(st.sid), m = 8, W = innerWidth, H = innerHeight;
+      const w = card.offsetWidth, h = card.offsetHeight;
+      let x = a ? a.x - w / 2 : W - w - 12, y = a ? a.y - h - 12 : 12, below = false;
+      if (a && y < m) { y = a.y + 150; below = true; }                 // no room above → drop below the platform
+      x = Math.min(Math.max(m, x), W - w - m); y = Math.min(Math.max(m, y), H - h - m);
+      card.style.left = `${x}px`; card.style.top = `${y}px`;
+      card.classList.toggle('below', below);
+      card.style.setProperty('--tail', a ? `${Math.min(Math.max(14, a.x - x), w - 14)}px` : '-99px');
+      const txt = st.until ? `terminal asks in ${Math.max(0, Math.ceil((st.until - Date.now()) / 1000))}s` : 'waits for your answer';
+      const note = card.querySelector('.note');
+      if (note && note.textContent !== txt) note.textContent = txt;
+    }
+    requestAnimationFrame(placeCards);
+  })();
   function renderDebug() {
     if (!showDebug) return;
     const lines = Object.entries(lastWorlds).map(([sid, w]) => {
       const ws = Object.entries(w.workers || {}).map(([a, k]) => `    ${a.slice(0, 8)} ${k.state}${k.lastTool ? ' (' + k.lastTool + ')' : ''}`);
       return `${sid.slice(0, 8)} [${w.status}] ${w.cwd || ''}\n    main ${w.main.state}\n${ws.join('\n')}`;
     });
-    debugEl.textContent = lines.join('\n\n') || 'no sessions yet';
+    rawEl.textContent = lines.join('\n\n') || 'no sessions yet';
   }
 
   // Demo mode (?demo): inject fake sessions so the worlds + units are visible without
@@ -185,7 +422,7 @@
       if (reason) needy++;
       const prev = notifyState.get(sid) || {};
       const name = w.title || sid.slice(0, 6);
-      if (reason === 'permission' && prev.reason !== 'permission') fireNote(`🔔 Needs you — ${name}`, (w.attention && w.attention.message) || 'Waiting for permission');
+      if (reason === 'permission' && prev.reason !== 'permission' && !runtime.osNotify) fireNote(`🔔 Needs you — ${name}`, (w.attention && w.attention.message) || 'Waiting for permission');
       if (w.lastError && w.lastError !== prev.lastError) fireNote(`❌ Error — ${name}`, 'A tool call errored');
       if (w.finishedAt && w.finishedAt !== prev.finishedAt && document.hidden) fireNote(`✅ Done — ${name}`, 'Turn finished');
       notifyState.set(sid, { reason: reason || null, finishedAt: w.finishedAt || prev.finishedAt || 0, lastError: w.lastError || prev.lastError || 0 });
@@ -218,6 +455,7 @@
       board.update(msg.worlds);
       setCount(msg.worlds);
       updateNotifications(msg.worlds);
+      renderApprovals(msg.worlds);
       renderDebug();
     };
   }

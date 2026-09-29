@@ -33,6 +33,10 @@ const EVENTS = [
   { event: 'SessionEnd', tool: false },
   { event: 'Notification', tool: false },     // → "needs you" attention state
   { event: 'UserPromptSubmit', tool: false }, // → turn start, so the unit works while Claude thinks (not just while a tool runs)
+  // → Allow/Deny / answer questions from the board. It holds only while a board tab is open, until you
+  // answer (or press Terminal, or answer in the terminal); with no board it returns at once.
+  // timeout (s) = Claude Code's outer bound on the hold.
+  { event: 'PermissionRequest', tool: true, timeout: 86400 },
 ];
 
 function cmdFor(event) {
@@ -53,15 +57,18 @@ fs.writeFileSync(backup, JSON.stringify(settings, null, 2));
 settings.hooks = settings.hooks || {};
 let added = 0;
 let skipped = 0;
+let updated = 0;
 
-for (const { event, tool } of EVENTS) {
+for (const { event, tool, timeout } of EVENTS) {
   const command = cmdFor(event);
   const arr = (settings.hooks[event] = settings.hooks[event] || []);
   // Idempotent: skip if any existing entry already runs our exact command.
-  const already = arr.some((entry) =>
-    (entry.hooks || []).some((h) => h.command === command));
-  if (already) { skipped++; continue; }
-  const entry = { hooks: [{ type: 'command', command }] };
+  const mine = arr.flatMap((entry) => entry.hooks || []).find((h) => h.command === command);
+  if (mine) {                                   // already registered: just bring its timeout up to date
+    if (timeout && mine.timeout !== timeout) { mine.timeout = timeout; updated++; } else skipped++;
+    continue;
+  }
+  const entry = { hooks: [{ type: 'command', command, ...(timeout ? { timeout } : {}) }] };
   if (tool) entry.matcher = ''; // empty matcher = all tools
   arr.push(entry);
   added++;
@@ -72,6 +79,6 @@ fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 console.log(`Hook: ${hookPath}`);
 console.log(`Settings: ${settingsPath}`);
 console.log(`Backup:  ${backup}`);
-console.log(`Registered ${added} new hook(s), ${skipped} already present.`);
+console.log(`Registered ${added} new hook(s), updated ${updated}, ${skipped} already present.`);
 console.log(`Log file will be: ${path.resolve(__dirname, '..', 'hooks', 'agent-events.jsonl')}`);
 console.log('\nRestart your Claude Code sessions so the new hooks load.');

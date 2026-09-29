@@ -1,0 +1,9 @@
+node_modules
+.git
+hooks
+test
+docs
+gifs
+scripts
+*.command
+*.md
