@@ -1,5 +1,7 @@
 # Hex-World Agent Visualizer
 
+![Hex-World board: five Claude Code sessions, a permission prompt and a question answered from the board](docs/demo.gif)
+
 A local web board for everyone running several Claude Code sessions at once. Each live session is a
 floating hex platform; its main agent and every subagent are robots working on it. At a glance you
 see **which session needs you**, what each agent is doing right now, and where your time and tokens go —
