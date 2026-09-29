@@ -24,7 +24,7 @@
   #legend b { color: #cdd3e0; font-weight: 600; }
   #legend .k { display: inline-flex; align-items: center; gap: 6px; }
   #legend .sw { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
-  #debug { position: fixed; top: 40px; left: 12px; right: 12px; bottom: 12px; z-index: 70;
+  #debug { position: fixed; top: 40px; left: 12px; right: 12px; bottom: 12px; z-index: 95; /* above #approvals (90) */
            padding: 12px 14px; background: rgba(10,13,20,.95); border: 1px solid #232a3a; border-radius: 8px;
            overflow: auto; color: #b8c0d4; }
   #raw { margin: 14px 0 0; white-space: pre-wrap; color: #8b94a8; border-top: 1px solid #1e2636; padding-top: 10px; }
@@ -265,7 +265,7 @@
   // Applies to the first question card; ignored while typing (Other / filter box).
   addEventListener('keydown', (e) => {
     const card = [...approvalsEl.children].find((c) => cardState.get(c.dataset.id)?.qs);
-    if (!card || e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!card || showDebug || e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return; // d panel hides the cards: don't answer blind
     const st = cardState.get(card.dataset.id);
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); showTab(card, st.cur + (e.key === 'ArrowRight' ? 1 : -1)); }
     else if (/^[1-9]$/.test(e.key) && st.cur < st.qs.length) { const b = card.querySelector(`.q[data-q="${st.cur}"] .opt[data-o="${+e.key - 1}"]`); if (b) { e.preventDefault(); b.click(); } }
