@@ -1,5 +1,5 @@
 {
-  "name": "slave-ui",
+  "name": "hex-world",
   "version": "0.0.0",
   "private": true,
   "description": "Hex-World Agent Visualizer — live map of Claude Code sessions/agents.",

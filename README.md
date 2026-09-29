@@ -15,7 +15,7 @@ your local transcripts.
 **You need:** [Node.js](https://nodejs.org) 18+ (`node -v`; macOS: `brew install node`) and Claude Code.
 
 ```bash
-git clone https://github.com/Iartyom/slave-ui.git && cd slave-ui
+git clone https://github.com/Iartyom/hex-world.git && cd hex-world
 npm install              # once
 npm run install-hooks    # once: registers the hooks in ~/.claude/settings.json (backs it up first)
 npm start                # every time: serves http://localhost:8787
