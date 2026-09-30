@@ -24,18 +24,26 @@ export const PRICING = {
 const KEYS = Object.keys(PRICING).sort((a, b) => b.length - a.length);
 export const priceFor = (model) => { const k = model && KEYS.find((p) => model.startsWith(p)); return k ? PRICING[k] : null; };
 
-/** Dollar cost of one API response's `usage`, or null if the model has no known price. */
-export function costOf(model, u) {
+/**
+ * Dollar cost of one API response's `usage`, split by what it paid for:
+ * { in, out, read, write } (read = re-reading cached context, write = caching new context),
+ * or null if the model has no known price.
+ */
+export function costParts(model, u) {
   if (!u) return null;
   const cc = u.cache_creation;                           // split by TTL when present
   const w1h = cc ? cc.ephemeral_1h_input_tokens || 0 : 0;
   const w5m = cc ? cc.ephemeral_5m_input_tokens || 0 : u.cache_creation_input_tokens || 0;
   // Zero tokens costs $0 whatever the model — e.g. Claude Code's "<synthetic>" placeholder messages.
-  if (!(u.input_tokens || u.output_tokens || u.cache_read_input_tokens || w5m || w1h)) return 0;
+  if (!(u.input_tokens || u.output_tokens || u.cache_read_input_tokens || w5m || w1h)) return { in: 0, out: 0, read: 0, write: 0 };
   const p = priceFor(model);
   if (!p) return null;
-  const read = p.read ?? p.in * 0.1;
-  const usd = ((u.input_tokens || 0) * p.in + (u.output_tokens || 0) * p.out
-    + (u.cache_read_input_tokens || 0) * read + w5m * p.in * 1.25 + w1h * p.in * 2) / 1e6;
-  return u.speed === 'fast' ? usd * 2 : usd;
+  const k = (u.speed === 'fast' ? 2 : 1) / 1e6;
+  return { in: (u.input_tokens || 0) * p.in * k, out: (u.output_tokens || 0) * p.out * k,
+    read: (u.cache_read_input_tokens || 0) * (p.read ?? p.in * 0.1) * k, write: (w5m * 1.25 + w1h * 2) * p.in * k };
+}
+/** Dollar cost of one API response's `usage`, or null if the model has no known price. */
+export function costOf(model, u) {
+  const c = costParts(model, u);
+  return c && c.in + c.out + c.read + c.write;
 }

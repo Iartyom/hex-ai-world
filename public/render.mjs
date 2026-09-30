@@ -14,7 +14,8 @@ import { UNIT, dirFromAngle, framePath, NEAREST_CARDINAL } from '/config/units.m
 import { axialToPixel, spiralCells, hexCorners } from './hexgrid.mjs';
 import { openMirror, mirrorActive, revealMirror } from './terminal.mjs';
 import { esc, baseName, tickerText } from './pure.mjs';
-import { barChart, stackedBars, stateLegend, STATE_COLORS, SERIES, fmtUsd, fmtDur } from './charts.mjs';
+import { flagsOf } from '/config/quality.mjs';
+import { stackedBars, stateLegend, STATE_COLORS, fmtDur, fmtTok, CTX_HEAVY } from './charts.mjs';
 import { makeWorldAllocator, makeCellAllocator } from './alloc.mjs';
 import { makeFloor, makeSpacing } from './floor.mjs';
 
@@ -124,7 +125,7 @@ export async function startBoard(mountEl) {
     .hw-tip .a.need{color:#ffcf4d;font-weight:700}
     .hw-tip .hint{margin-top:4px;color:#465067;font-size:10.5px}
     .hw-tip .g{margin-top:7px}
-    .hw-tip .gl{display:flex;justify-content:space-between;color:#8b94a8;font-size:10.5px;margin-bottom:2px}
+    .hw-tip .gl{display:flex;justify-content:space-between;gap:10px;color:#8b94a8;font-size:10.5px;margin-bottom:2px}
     .hw-tip .gl b{color:#cdd3e0;font-weight:600}
     .hw-tip .ax{display:flex;justify-content:space-between;color:#465067;font-size:9.5px}
     .hw-tip .tot{margin-top:6px;color:#8b94a8;font-size:10.5px}
@@ -132,6 +133,9 @@ export async function startBoard(mountEl) {
     .hw-tip .lgs{display:flex;gap:9px;color:#8b94a8;font-size:10px;margin-top:2px}
     .hw-tip .lg{display:inline-flex;align-items:center;gap:4px}
     .hw-tip .lg i{width:8px;height:8px;border-radius:2px;display:inline-block}
+    .hw-tip .ctx{margin-top:6px;display:flex;justify-content:space-between;gap:10px}
+    .hw-tip .ctx b{color:#eaeef6;font-weight:600}
+    .hw-tip .warn{margin-top:2px;color:#e0b050;font-size:10.5px;white-space:normal}
   `;
   document.head.appendChild(tipStyle);
   const tip = document.createElement('div'); tip.className = 'hw-tip';
@@ -153,19 +157,29 @@ export async function startBoard(mountEl) {
   function statsHtml(sid) {
     const d = statsCache.get(sid)?.data;
     if (!d) return '';
-    const { series, timeline: tl } = d;
+    const { timeline: tl } = d;
     const sum = (a) => a.reduce((x, y) => x + y, 0);
-    const sumC = sum(series.cost);
     const ax = '<div class="ax"><span>−2h</span><span>now</span></div>';
     // What the agent spent the last 2h doing (sampled by the server); empty space = idle / server off.
     const layers = ['working', 'thinking', 'blocked'].map((k) => ({ values: tl[k], color: STATE_COLORS[k] }));
     const tracked = sum(tl.working) + sum(tl.thinking) + sum(tl.blocked) + sum(tl.idle);
     const busyPct = tracked ? Math.round(100 * (sum(tl.working) + sum(tl.thinking)) / tracked) : 0;
-    return `<div class="g"><div class="gl"><span>activity · 5-min</span><b>${tracked ? `${busyPct}% busy · ${fmtDur(sum(tl.blocked))} waiting on you` : 'no samples yet'}</b></div>`
+    // What to do about THIS session's quality, from Anthropic's Claude Code best practices — only the
+    // flags that apply. Context size is shown, not judged: no published threshold says where Opus degrades.
+    const q = d.quality || {}, on = flagsOf(q), flags = [];
+    // Each flag: what's wrong, then exactly what to type (in quotes / as a command).
+    if (on.corrections) flags.push(`You corrected it ${q.corrections}× in your last ${q.recentPrompts} prompts — its context is now full of failed attempts. Type /clear, then restate the task with what you learned.`);
+    if (on.uncheckedEdits) flags.push(`${q.uncheckedEdits} edits not verified yet. Tell it: “run the tests and lint for what you changed, and fix any failures.”`);
+    if (on.branches) flags.push(`${q.branches} git branches in this session — unrelated tasks are mixing in one context. Before the next task, /clear or open a new session.`);
+    if (on.compactions) flags.push(`Compacted ${q.compactions}× — it remembers earlier work only as summaries. For a new task, start a fresh session.`);
+    const age = d.startTs ? Date.now() - d.startTs : 0;
+    const ctxHtml = d.ctx ? `<div class="ctx"><span>context <b>${fmtTok(d.ctx)}</b>${d.ctx >= CTX_HEAVY ? ' <span class="warn" style="display:inline">· large</span>' : ''}</span>`
+      + `<span>${age > 86_400_000 ? `running <b>${Math.floor(age / 86_400_000)}d</b>` : q.uncheckedEdits ? `<b>${q.uncheckedEdits}</b> unchecked edit${q.uncheckedEdits === 1 ? '' : 's'}` : 'checked ✓'}</span></div>` : '';
+    return ctxHtml + flags.map((f) => `<div class="warn">⚠ ${esc(f)}</div>`).join('')
+      + `<div class="g"><div class="gl"><span>activity · 5-min</span><b>${tracked ? `${busyPct}% busy · ${fmtDur(sum(tl.blocked))} waiting on you` : 'no samples yet'}</b></div>`
       + `${stackedBars(layers, tl.step, { w: 230, h: 22 })}${ax}<div class="lgs">${stateLegend()}</div></div>`
-      + `<div class="g"><div class="gl"><span>cost · 5-min</span><b>${fmtUsd(sumC)}</b></div>${barChart(series.cost, { w: 230, h: 22, color: SERIES.cost })}${ax}</div>`
-      + `<div class="tot">session <b>${fmtUsd(d.cost)}</b>${d.costPartial ? ' (partial)' : ''} · ${d.tools} tools · ${fmtDur(d.activeMs)} active`
-      + `${d.subagents ? ` · ${d.subagents} subagent${d.subagents === 1 ? '' : 's'}` : ''}</div>`;
+      + `<div class="tot">${d.tools} tools · ${fmtDur(d.activeMs)} active`
+      + `${d.subagents ? ` · ${d.subagents} subagent${d.subagents === 1 ? '' : 's'}` : ''}${q.compactions ? ` · compacted ${q.compactions}×` : ''}</div>`;
   }
 
   function hideTip() { tip.style.display = 'none'; tipArgs = null; }

@@ -75,9 +75,10 @@ When a session asks for permission or asks you a question, a card pops up **next
 - **Terminal** → hand it back and answer in the terminal instead.
 
 The card waits until you answer. It gives up by itself (back to the normal terminal prompt) if you answer
-in the terminal, the session moves on, or you close the last board tab — so a session can never get
-stuck on a card nobody sees. The hook only waits while a board tab is open; without one, the terminal
-prompt appears immediately as always.
+in the terminal, the session moves on, or you close the last board page (5 s after, so a reload or a trip
+to the one-day view keeps it) — so a session can never get stuck on a card nobody sees. The one-day view
+counts as a board page and shows a 🔔 banner linking back while a card waits. The hook only waits while a
+board page is open; without one, the terminal prompt appears immediately as always.
 
 ### The `d` panel — where time and money went
 

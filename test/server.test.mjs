@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { server, worlds } from '../server/server.mjs';
+import { server, worlds, releaseGrace } from '../server/server.mjs';
 
 let base;           // http://localhost:<port>
 let tmp;            // temp project dir holding the transcript files
@@ -155,8 +155,8 @@ test('POST /event from a foreign origin is refused; the hook (no Origin) is acce
 test('/stats sums a session and its subagents', async () => {
   const r = await fetch(`${base}/stats?session=${SID}`).then((x) => x.json());
   assert.equal(r.subagents, 1);
-  assert.equal(r.series.tools.length, 24);
-  assert.equal(typeof r.cost, 'number');
+  assert.equal(r.timeline.working.length, 24);
+  assert.ok(r.quality && typeof r.quality.uncheckedEdits === 'number');
 });
 
 test('/permission: AskUserQuestion ships the questions; answering returns allow + updatedInput.answers', async () => {
@@ -191,6 +191,12 @@ test('held prompt is released when you answer in the terminal (same tool ran) or
   assert.deepEqual(await held, {}, 'the same tool ran → answered in the terminal → released');
   const held2 = post('/permission', { session_id: SID, tool_name: 'Bash', tool_input: { command: 'make' } }).then((x) => x.json());
   await waitCard();
+  releaseGrace.ms = 150;
   ws.close();
-  assert.deepEqual(await held2, {}, 'last board tab closed → back to the terminal');
+  await new Promise((r) => setTimeout(r, 30));
+  const ws2 = await open();                                  // board → day view (or a reload) within the grace
+  await new Promise((r) => setTimeout(r, 250));
+  assert.ok(worlds[SID].permission, 'a page reconnected within the grace → the card is still held');
+  ws2.close();
+  assert.deepEqual(await held2, {}, 'last page closed and nobody came back → back to the terminal');
 });

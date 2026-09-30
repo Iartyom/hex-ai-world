@@ -279,3 +279,107 @@ test('reconcilePids: extra pid-less sessions in a folder are dead; a 1:1 match a
   assert.equal(worlds.solo.pid, 9, 'sole match adopts the pid');
   assert.equal(worlds.newer.pid, undefined, 'ambiguous → keep, learn the pid from its next event');
 });
+
+test('dayRecords: per-minute tokens once per message, clipped merged active spans', async () => {
+  const { dayRecords, IDLE_GAP } = await import('../server/state.mjs');
+  const from = Date.parse('2026-09-30T00:00:00Z');
+  const at = (min) => new Date(from + min * 60_000).toISOString();
+  const usage = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 1 };
+  const L = (o) => JSON.stringify(o);
+  const text = [
+    L({ cwd: '/p', timestamp: new Date(from - 2 * 60_000).toISOString(), type: 'user' }),         // yesterday, 2 min before midnight
+    L({ timestamp: at(1), message: { id: 'm1', model: 'opus', usage } }),                          // ≤5 min gap → span starts at 0 (clipped)
+    L({ timestamp: at(1), message: { id: 'm1', model: 'opus', usage } }),                          // same message, another content block
+    L({ timestamp: at(3), message: { id: 'm2', model: 'sonnet', usage } }),
+    L({ timestamp: at(3 + IDLE_GAP / 60_000 + 10), message: { id: 'm3', model: '<synthetic>', usage } }), // long gap → new span, not counted
+    L({ type: 'ai-title', aiTitle: 'T' }),
+  ].join('\n');
+  const r = dayRecords(text, from);
+  assert.equal(r.cwd, '/p'); assert.equal(r.title, 'T');
+  assert.deepEqual(r.tokens, { opus: { 1: [10, 5, 100, 1, 0, 0, 0] }, sonnet: { 3: [10, 5, 100, 1, 0, 0, 0] } }, 'unpriced ids: $0');
+  assert.equal(r.turns, 2); assert.equal(r.ctx, 2 * 111);
+  const priced = dayRecords(L({ timestamp: at(5), message: { id: 'x', model: 'claude-opus-5-5', usage: { output_tokens: 1e6, cache_read_input_tokens: 1e6 } } }), from);
+  assert.deepEqual(priced.tokens['claude-opus-5-5'][5].slice(4).map((v) => +v.toFixed(6)), [0.2, 0, 20], '$read, $write, $out');
+  assert.deepEqual(r.active, [[0, 3], [18, 18]]);
+});
+
+test('outcomes: checked vs unchecked commits, rework across sessions, wasted causes, reply waits', async () => {
+  const { newTranscriptState, feedTranscript, summarize, wasteCause } = await import('../server/state.mjs');
+  const now = Date.parse('2026-09-30T12:00:00Z'), at = (min) => new Date(now - 60 * 60_000 + min * 60_000).toISOString();
+  const L = (o) => JSON.stringify(o);
+  const use = (id, name, input, t) => L({ type: 'assistant', timestamp: at(t), message: { content: [{ type: 'tool_use', id, name, input }] } });
+  const res = (id, t, err = false, content = 'ok') => L({ type: 'user', timestamp: at(t), message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: err, content }] } });
+  const a = newTranscriptState();
+  feedTranscript(a, [
+    use('e1', 'Edit', { file_path: '/r/x.ts' }, 0), res('e1', 0.5),                          // 30s later: an approval wait
+    use('t1', 'Bash', { command: 'npx nx test api' }, 1), res('t1', 2),
+    use('c1', 'Bash', { command: 'git commit -m "fix: guard nulls"' }, 3), res('c1', 3),       // checked
+    use('e2', 'Edit', { file_path: '/r/y.ts' }, 4), res('e2', 4),
+    use('c2', 'Bash', { command: "git commit -m 'wip'" }, 5), res('c2', 5),                   // unchecked (edit after the test)
+    use('c3', 'Bash', { command: 'git commit -m "failed"' }, 6), res('c3', 6, true, 'Exit code 1'), // failed commit: not counted
+    use('m1', 'mcp__db__find', {}, 7), res('m1', 7, true, 'You need to connect ... finish their OIDC login'),
+    use('r1', 'Bash', { command: 'rm x' }, 8), res('r1', 8, true, "The user doesn't want to proceed"),  // a decision, not waste
+    L({ type: 'user', timestamp: at(12), message: { content: 'next task please' } }),           // 4 min after the last assistant line
+  ].join('\n'));
+  const b = newTranscriptState();                                                               // another session edits x.ts after the commit
+  feedTranscript(b, [use('e9', 'Edit', { file_path: '/r/x.ts' }, 20), res('e9', 20)].join('\n'));
+  const o = summarize([{ st: a, isSession: true, sid: 'A' }, { st: b, isSession: true, sid: 'B' }], now, 14).outcomes;
+  assert.equal(o.commits, 2); assert.equal(o.edited, 2); assert.equal(o.checked, 1);
+  assert.deepEqual(o.unchecked.map((c) => c.msg), ['wip']);
+  assert.deepEqual(o.wasted.map((w) => w.cause).sort(), ['command failed', 'connector down / not logged in']);
+  assert.equal(o.wasted.reduce((s, w) => s + w.count, 0), 2, 'the user reject is not waste');
+  assert.ok(o.rework.reworked >= 1, 'x.ts edited again by session B after the commit');
+  assert.equal(o.replyMedianS, 240);
+  assert.equal(o.approveMs, 30_000);
+  assert.equal(wasteCause('Agent', 'PreToolUse:Agent hook error: [You gate…]'), 'blocked by a hook');
+  assert.equal(wasteCause('mcp__x', '{"code":403,"message":"The app is not installed on this instance"}'), 'access denied by the service (401/403)');
+  assert.equal(wasteCause('Edit', '<tool_use_error>Found 3 matches of the string to replace'), 'edit text not found / ambiguous');
+});
+
+test('quality signals: corrections in recent prompts (reject counted once), unchecked edits, branches, compactions', async () => {
+  const { newTranscriptState, feedTranscript, qualityOf } = await import('../server/state.mjs');
+  const t = (m) => new Date(Date.parse('2026-09-30T10:00:00Z') + m * 60_000).toISOString();
+  const L = (o) => JSON.stringify(o);
+  const prompt = (m, text, br = 'main') => L({ type: 'user', timestamp: t(m), gitBranch: br, message: { content: text } });
+  const edit = (m, id) => L({ type: 'assistant', timestamp: t(m), message: { content: [{ type: 'tool_use', id, name: 'Edit', input: { file_path: '/a' } }] } });
+  const s = newTranscriptState();
+  feedTranscript(s, [
+    prompt(0, 'add a login page'), edit(1, 'e1'), edit(2, 'e2'),
+    prompt(3, 'no, use the existing form component'),
+    L({ type: 'assistant', timestamp: t(4), message: { content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'rm -rf x' } }] } }),
+    L({ type: 'user', timestamp: t(5), message: { content: [{ type: 'tool_result', tool_use_id: 'b1', is_error: true, content: "The user doesn't want to proceed" }, { type: 'text', text: '[Request interrupted by user for tool use]' }] } }),
+    prompt(6, 'thanks, now the logout flow', 'feature/logout'),
+  ].join('\n'));
+  let q = qualityOf(s.out);
+  assert.equal(q.corrections, 2, '"no, …" + one rejected call (its interrupt line not double-counted)');
+  assert.equal(q.uncheckedEdits, 2); assert.equal(q.branches, 2);
+  feedTranscript(s, [L({ type: 'assistant', timestamp: t(7), message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } }),
+    L({ type: 'user', timestamp: t(7.5), message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'pass 12' }] } }),
+    L({ type: 'user', timestamp: t(8), isCompactSummary: true, message: { content: 'summary…' } })].join('\n'));
+  q = qualityOf(s.out);
+  assert.equal(q.uncheckedEdits, 0, 'a check that succeeded resets it'); assert.equal(q.compactions, 1); assert.equal(q.corrections, 0, 'compaction starts a fresh window');
+});
+
+test('outcomes per session: subagent edits count, only files since the last commit ship, own subagent ≠ rework, quoted "eslint" / failed checks are not checks', async () => {
+  const { newTranscriptState, feedTranscript, summarize } = await import('../server/state.mjs');
+  const now = Date.parse('2026-09-30T12:00:00Z'), at = (min) => new Date(now - 120 * 60_000 + min * 60_000).toISOString();
+  const L = (o) => JSON.stringify(o);
+  const use = (id, name, input, t) => L({ type: 'assistant', timestamp: at(t), message: { content: [{ type: 'tool_use', id, name, input }] } });
+  const res = (id, t, err = false) => L({ type: 'user', timestamp: at(t), message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: err, content: err ? 'Exit code 1' : 'ok' }] } });
+  const feed = (lines) => { const s = newTranscriptState(); feedTranscript(s, lines.join('\n')); return s; };
+  const main = feed([
+    use('c1', 'Bash', { command: 'git commit -m "bump eslint to v9"' }, 10), res('c1', 10),         // ships the subagent's a.ts, unchecked
+    use('t1', 'Bash', { command: 'npm test' }, 21), res('t1', 21, true),                             // failed check: not a check
+    use('c2', 'Bash', { command: 'git commit -m "fix b"' }, 22), res('c2', 22),                      // ships b.ts only, unchecked
+    use('e3', 'Edit', { file_path: '/r/c.ts' }, 30), res('e3', 30),
+    use('c3', 'Bash', { command: 'npm test && git commit -m "fix c"' }, 31), res('c3', 31),          // chained check → checked
+  ]);
+  const sub = feed([use('e1', 'Edit', { file_path: '/r/a.ts' }, 5), res('e1', 5),                    // subagent of the same session
+    use('e2', 'Edit', { file_path: '/r/b.ts' }, 20), res('e2', 20), use('e4', 'Edit', { file_path: '/r/b.ts' }, 40), res('e4', 40)]);
+  const other = feed([use('e9', 'Edit', { file_path: '/r/a.ts' }, 60), res('e9', 60)]);           // a different session reworks a.ts
+  const o = summarize([{ st: main, isSession: true, sid: 'S' }, { st: sub, isSession: false, sid: 'S' }, { st: other, isSession: true, sid: 'T' }], now, 14).outcomes;
+  assert.equal(o.commits, 3); assert.equal(o.edited, 3, 'the subagent\'s edits make the main agent\'s commits "edited"');
+  assert.equal(o.checked, 1, 'only the && chained test counts; quoted "eslint" and the failed npm test do not');
+  assert.deepEqual(o.unchecked.map((c) => c.msg).sort(), ['bump eslint to v9', 'fix b']);
+  assert.deepEqual(o.rework, { files: 3, reworked: 1 }, 'a.ts, b.ts, c.ts shipped once each; only session T\'s edit of a.ts is rework (the own subagent\'s b.ts edit is not)');
+});

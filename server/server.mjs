@@ -16,11 +16,11 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import {
   applyEvent, watchdog, serializeUnit, newTranscriptState, feedTranscript, transcriptDigest, FLASH_TTL,
-  ensureWorld, cmdSummary, toSaved, fromSaved, recentSeries, summarize, recordActivity, timelineSeries, ACTIVITY, reconcilePids,
+  ensureWorld, cmdSummary, toSaved, fromSaved, summarize, recordActivity, timelineSeries, ACTIVITY, reconcilePids, dayRecords, qualityOf,
 } from './state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 8787;
+const PORT = Number(process.env.HEX_WORLD_PORT) || 8787;          // a second copy (e.g. for testing) next to a running one
 const PUBLIC = path.resolve(__dirname, '..', 'public');
 const CONFIG = path.resolve(__dirname, '..', 'config'); // browser imports the shared config from here
 const VENDOR = path.resolve(__dirname, '..', 'node_modules', 'pixi.js', 'dist'); // PixiJS served locally
@@ -112,12 +112,41 @@ async function buildSummary(days) {
   const entries = [];
   for (const { file, isSession } of recentTranscripts(days)) {
     const st = readState(file);
-    if (st) entries.push({ st, isSession });
+    if (st) entries.push({ st, isSession, sid: isSession ? path.basename(file, '.jsonl') : path.basename(path.dirname(path.dirname(file))) });
     await new Promise((r) => setImmediate(r));
   }
   const data = summarize(entries, Date.now(), days);
   summaryCache = { at: Date.now(), days, data };
   return data;
+}
+
+// One day, every agent: re-reads each transcript touched since `from` (the day view needs per-minute
+// detail the incremental cache doesn't keep). [from, to) are the browser's local midnights, so day
+// boundaries follow the viewer's timezone (and a 23/25-hour DST day) even in a UTC container.
+// Yields between files so hook POSTs keep flowing; concurrent requests for the same day share one build.
+// ponytail: full re-read per build (~seconds for a few hundred MB), 60s cache; key per-file results by size if it drags.
+let dayCache = null;                          // { at, key, promise }
+function buildDay(from, to) {
+  const key = `${from}-${to}`;
+  if (dayCache && dayCache.key === key && Date.now() - dayCache.at < 60_000) return dayCache.promise;
+  const promise = (async () => {
+    const agents = [];
+    for (const { file, isSession } of recentTranscripts((Date.now() - from) / 86_400_000)) {
+      let text; try { text = await fs.promises.readFile(file, 'utf8'); } catch { continue; }
+      const r = dayRecords(text, from, to);
+      await new Promise((res) => setImmediate(res));
+      if (!r.active.length && !Object.keys(r.tokens).length) continue;
+      const sid = isSession ? path.basename(file, '.jsonl') : path.basename(path.dirname(path.dirname(file)));
+      agents.push({ id: path.basename(file, '.jsonl'), sid, sub: !isSession, ...r });
+    }
+    // Subagents carry no title of their own: borrow their session's.
+    const titles = new Map(agents.filter((a) => !a.sub).map((a) => [a.sid, a.title]));
+    for (const a of agents) if (a.sub) a.title = titles.get(a.sid) || null;
+    return { from, to, minutes: Math.round((to - from) / 60_000), agents };
+  })();
+  dayCache = { at: Date.now(), key, promise };
+  promise.catch(() => { if (dayCache && dayCache.promise === promise) dayCache = null; });   // don't cache a failure
+  return promise;
 }
 
 // ---- desktop notifications (#1): from the server, so they work with the tab closed -------------
@@ -344,14 +373,16 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'GET' && urlPath === '/stats') {
-    // One session (+ its subagents): totals and the last 2h in 5-minute buckets — for the hover graphs.
+    // One session (+ its subagents): what the hover shows — context, quality flags, last 2h of activity.
     const sid = new URL(req.url, 'http://localhost').searchParams.get('session');
     const w = sid && worlds[sid];
     if (!w) { json(res, 404, { error: 'unknown session' }); return; }
     const states = sessionFiles(w.transcriptPath).map(readState).filter(Boolean);
+    const main = readState(w.transcriptPath);
     const sum = (k) => states.reduce((a, st) => a + (st[k] || 0), 0);
-    json(res, 200, { cost: sum('cost'), costPartial: states.some((st) => st.unpriced), tools: sum('tools'), activeMs: sum('activeMs'),
-      subagents: Math.max(0, states.length - 1), series: recentSeries(states, Date.now(), 24), timeline: timelineSeries(w, Date.now(), 24) });
+    json(res, 200, { tools: sum('tools'), activeMs: sum('activeMs'), subagents: Math.max(0, states.length - 1),
+      ctx: main ? main.ctx : 0, startTs: main ? main.startTs : null, quality: main ? qualityOf(main.out) : null,
+      timeline: timelineSeries(w, Date.now(), 24) });
     return;
   }
   if (req.method === 'GET' && urlPath === '/summary') {
@@ -360,6 +391,16 @@ const server = http.createServer((req, res) => {
     // only covers time the server was running).
     const live = Object.entries(worlds).map(([sid, w]) => ({ sid, title: titleFor(w), cwd: w.cwd, status: w.status, timeline: timelineSeries(w, Date.now(), 24) }));
     buildSummary(days).then((d) => json(res, 200, { ...d, live, activity: ACTIVITY }), (e) => json(res, 500, { error: String(e && e.message || e) }));
+    return;
+  }
+  if (req.method === 'GET' && urlPath === '/day') {
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const from = Number(q.get('from')), to = Number(q.get('to') || from + 86_400_000);
+    const len = to - from;                                 // 23-25h: one local day, DST included
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > Date.now() || Date.now() - from > 60 * 86_400_000 || len < 22 * 3_600_000 || len > 26 * 3_600_000) {
+      json(res, 400, { error: 'from/to: local midnights (ms) one day apart, within 60 days' }); return;
+    }
+    buildDay(from, to).then((d) => json(res, 200, d), (e) => json(res, 500, { error: String(e && e.message || e) }));
     return;
   }
   if (req.method === 'GET' && urlPath === '/state') {
@@ -435,12 +476,21 @@ function serveStatic(res, root, rel) {
   });
 }
 
+export const releaseGrace = { ms: 5000 };           // tests shorten it
+let releaseTimer = null;
 server.on('upgrade', (req, socket, head) => {
   if (!isLocalHost(req.headers.host) || !isLocalOrigin(req.headers.origin)) { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, (ws) => {   // live state broadcast channel
+    clearTimeout(releaseTimer);                    // a page is back → keep holding the prompts
     ws.send(snapshot()); // hand the newcomer the current world immediately
-    // Last board tab gone → nobody can click; hand every held prompt back to its terminal.
-    ws.on('close', () => { if (!wss.clients.size) for (const id of [...pendingPerms.keys()]) settlePermission(id, null); });
+    // Last page gone (board or day view, both connect) → nobody can click. Wait a short grace first, so
+    // a reload or board ↔ day navigation reconnects without losing the cards; then hand every held
+    // prompt back to its terminal.
+    ws.on('close', () => {
+      if (wss.clients.size) return;
+      clearTimeout(releaseTimer);
+      releaseTimer = setTimeout(() => { if (!wss.clients.size) for (const id of [...pendingPerms.keys()]) settlePermission(id, null); }, releaseGrace.ms);
+    });
   });
 });
 

@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { esc, baseName, langFor, tickerText, lineDiff, charDiff } from '../public/pure.mjs';
 
 test('esc: escapes HTML-significant chars', () => {
-  assert.equal(esc('<a href="x">&'), '&lt;a href="x"&gt;&amp;');
+  assert.equal(esc('<a href="x">&'), '&lt;a href=&quot;x&quot;&gt;&amp;');
+  assert.equal(esc(`it's`), 'it&#39;s', 'safe inside title="…" and title=\'…\' attributes');
   assert.equal(esc(null), '');
   assert.equal(esc(undefined), '');
 });
