@@ -4,8 +4,9 @@
  * and importable from both public/render.mjs and public/terminal.mjs (removing the old copies).
  */
 
-// HTML-escape for safe innerHTML interpolation.
-export const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+// HTML-escape for safe innerHTML interpolation — text AND attribute values (titles/paths come from
+// transcripts, so a `"` must not end a title="…" attribute early).
+export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Last path segment (file/folder name) from a POSIX or Windows path.
 export const baseName = (p) => (p ? p.replace(/[/\\]+$/, '').split(/[/\\]/).pop() : '');

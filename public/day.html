@@ -1,0 +1,223 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Hex-World · one day</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 14px 16px 40px; background: #0b0e14; color: #cdd3e0; font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  a { color: #7fb0ff; }
+  h1 { font-size: 14px; color: #eaeef6; margin: 0; font-weight: 600; }
+  h3 { font-size: 12px; color: #eaeef6; margin: 18px 0 6px; font-weight: 600; }
+  .top { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  input, select { background: #11151f; border: 1px solid #263042; color: #cdd3e0; border-radius: 6px; padding: 3px 7px; font: inherit; }
+  .muted { color: #5a6577; }
+  .filters { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; align-items: start;
+             padding: 10px 12px; background: #0f131c; border: 1px solid #1e2636; border-radius: 8px; }
+  .filters > b { color: #6b7488; font-weight: 500; padding-top: 3px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips label { display: inline-flex; gap: 5px; align-items: center; padding: 2px 8px; border: 1px solid #232b3b; border-radius: 12px; cursor: pointer; }
+  .chips label:has(input:checked) { border-color: #3a5a86; background: #121c2c; color: #eaeef6; }
+  .chips input { margin: 0; accent-color: #3987e5; }
+  .chips button { background: none; border: 0; color: #5a7ab0; cursor: pointer; font: inherit; padding: 2px 4px; }
+  .tiles { display: flex; gap: 26px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .tile .v { font-size: 20px; color: #eaeef6; font-weight: 600; }
+  .tile .l { color: #6b7488; font-size: 11px; }
+  .ax { position: relative; height: 13px; color: #465067; font-size: 10px; }
+  .ax span { position: absolute; top: 0; }
+  .chart { overflow: hidden; }
+  table { border-collapse: collapse; }
+  th { text-align: left; color: #6b7488; font-weight: 500; padding: 3px 16px 3px 0; border-bottom: 1px solid #1e2636; }
+  td { padding: 4px 16px 4px 0; border-bottom: 1px solid #141b27; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .tables { display: flex; gap: 40px; flex-wrap: wrap; }
+  [hidden] { display: none !important; }
+  #needs { display: block; margin: -4px 0 12px; padding: 7px 12px; border-radius: 8px; background: #2a1d08;
+           border: 1px solid #c98500; color: #ffcf4d; font-weight: 600; text-decoration: none; }
+  .lgs { display: flex; gap: 16px; flex-wrap: wrap; color: #8b94a8; }
+  .lg { display: inline-flex; align-items: center; gap: 5px; } .lg b { color: #cdd3e0; font-weight: 600; }
+  .lg i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+</style>
+<a id="needs" href="/" hidden></a>
+<div class="top">
+  <h1>One day</h1>
+  <input type="date" id="date" />
+  <label>resolution <select id="res"><option value="1">1 min</option><option value="5" selected>5 min</option><option value="15">15 min</option><option value="60">1 hour</option></select></label>
+  <span id="status" class="muted"></span>
+  <a href="/#d">← back to stats</a> <a href="/">board</a>
+</div>
+<div class="filters">
+  <b>measure</b><div class="chips" id="f-measure"></div>
+  <b>agents</b><div class="chips" id="f-kind"></div>
+  <b>model</b><div class="chips" id="f-model"></div>
+  <b>project</b><div class="chips" id="f-proj"></div>
+  <b id="l-tok">tokens</b><div class="chips" id="f-tok"></div>
+</div>
+<div id="out"></div>
+<script type="module">
+import { barChart, stackedBars, SERIES, PARTS, PART_COLORS, PART_LABELS, fmtTok, fmtUsd, CTX_HEAVY } from '/charts.mjs';
+import { esc, baseName } from '/pure.mjs';
+
+const TOK = ['input', 'output', 'cache read', 'cache write'];
+const PART_COL = { read: 4, write: 5, out: 6 };        // $ columns of a dayRecords row
+const $ = (id) => document.getElementById(id);
+// Minute index → local clock time. Uses the real clock, so the hours after a DST switch label correctly.
+const hhmm = (m) => new Date(data.from + m * 60_000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+const localDay = (d) => d.toLocaleDateString('sv');   // YYYY-MM-DD, local
+
+let data = null, allModels = 0;
+const sel = { measure: 'cost', kind: 'all', models: new Set(), projs: new Set(), tok: new Set([0, 1, 2, 3]) };
+
+// Checkbox/radio chips built with the DOM API (labels are file paths/model ids — never HTML strings).
+// Radio chips write sel[key]; checkbox chips toggle membership in `set`.
+function chips(el, items, set, { key = null } = {}) {
+  el.replaceChildren();
+  for (const { value, label, title } of items) {
+    const l = document.createElement('label'), i = document.createElement('input');
+    i.type = key ? 'radio' : 'checkbox'; i.name = el.id;
+    i.checked = key ? sel[key] === value : set.has(value);
+    i.onchange = () => { if (key) sel[key] = value; else i.checked ? set.add(value) : set.delete(value); render(); };
+    l.append(i, label); if (title) l.title = title; el.append(l);
+  }
+  if (!key && items.length > 1) for (const [txt, all] of [['all', true], ['none', false]]) {
+    const b = document.createElement('button'); b.textContent = txt;
+    b.onclick = () => { set.clear(); if (all) items.forEach((it) => set.add(it.value)); chips(el, items, set); render(); };
+    el.append(b);
+  }
+}
+
+async function load() {
+  const date = $('date').value;
+  const [y, m, d] = date.split('-').map(Number);
+  const from = new Date(y, m - 1, d).getTime(), to = new Date(y, m - 1, d + 1).getTime();   // 23-25h on DST days
+  history.replaceState(null, '', `?date=${date}`);
+  $('status').textContent = 'reading transcripts…'; $('out').innerHTML = '';
+  try {
+    const r = await fetch(`/day?from=${from}&to=${to}`);
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+  } catch (e) { $('status').textContent = 'failed: ' + e.message; return; }
+  $('status').textContent = '';
+  const models = [...new Set(data.agents.flatMap((a) => Object.keys(a.tokens)))].sort();
+  const projs = [...new Set(data.agents.map((a) => a.cwd || '(unknown)'))].sort();
+  sel.models = new Set(models); allModels = models.length; sel.projs = new Set(projs);
+  chips($('f-measure'), [{ value: 'cost', label: 'cost ($)' }, { value: 'tokens', label: 'tokens' }], null, { key: 'measure' });
+  chips($('f-kind'), [{ value: 'all', label: 'all' }, { value: 'main', label: 'main sessions' }, { value: 'sub', label: 'subagents' }], null, { key: 'kind' });
+  chips($('f-model'), models.map((v) => ({ value: v, label: v })), sel.models);
+  chips($('f-proj'), projs.map((v) => ({ value: v, label: baseName(v) || v, title: v })), sel.projs);
+  chips($('f-tok'), TOK.map((label, value) => ({ value, label })), sel.tok);
+  render();
+}
+
+function render() {
+  if (!data) return;
+  const cost = sel.measure === 'cost';
+  $('f-tok').hidden = $('l-tok').hidden = cost;        // token kinds only matter when counting tokens
+  const DAY_MIN = data.minutes, res = Number($('res').value), n = Math.ceil(DAY_MIN / res);
+  const agents = data.agents.filter((a) => (sel.kind === 'all' || (sel.kind === 'sub') === a.sub)
+    && sel.projs.has(a.cwd || '(unknown)')
+    // An agent with no usage that day (only tool lines) counts only while no model is filtered out.
+    && (Object.keys(a.tokens).some((m) => sel.models.has(m)) || (!Object.keys(a.tokens).length && sel.models.size === allModels)));
+  // Per minute: $ split by part, and tokens of the selected kinds (selected models only).
+  const perPart = Object.fromEntries(PARTS.map((k) => [k, new Float64Array(DAY_MIN)]));
+  const perTok = new Float64Array(DAY_MIN), split = [0, 0, 0, 0], partTot = { read: 0, write: 0, out: 0 };
+  const byModel = new Map(), byProj = new Map(), bySess = new Map();
+  for (const a of agents) {
+    let aCost = 0, aTok = 0;
+    for (const [model, mins] of Object.entries(a.tokens)) {
+      if (!sel.models.has(model)) continue;
+      let mc = 0, mt = 0;
+      for (const [m, row] of Object.entries(mins)) {
+        for (const k of PARTS) { perPart[k][m] += row[PART_COL[k]]; partTot[k] += row[PART_COL[k]]; mc += row[PART_COL[k]]; }
+        let t = 0; for (const k of sel.tok) { t += row[k]; split[k] += row[k]; }
+        perTok[m] += t; mt += t;
+      }
+      const bm = byModel.get(model) || { cost: 0, tok: 0 }; bm.cost += mc; bm.tok += mt; byModel.set(model, bm);
+      aCost += mc; aTok += mt;
+    }
+    const p = byProj.get(a.cwd || '(unknown)') || { cost: 0, tok: 0, main: 0, sub: 0 };
+    p.cost += aCost; p.tok += aTok; p[a.sub ? 'sub' : 'main']++; byProj.set(a.cwd || '(unknown)', p);
+    const ss = bySess.get(a.sid) || { title: a.title, cwd: a.cwd, cost: 0, tok: 0, subCost: 0, turns: 0, ctx: 0 };
+    ss.cost += aCost; ss.tok += aTok;
+    if (a.sub) ss.subCost += aCost; else { ss.turns += a.turns; ss.ctx += a.ctx; ss.mainCost = (ss.mainCost || 0) + aCost; ss.title = a.title || ss.title; }
+    bySess.set(a.sid, ss);
+  }
+  // Agents running at once: +1 at span start, -1 after its end, running sum per minute.
+  const diff = new Int32Array(DAY_MIN + 1);
+  for (const a of agents) for (const [s, e] of a.active) { diff[s]++; diff[e + 1]--; }
+  const conc = new Int32Array(DAY_MIN); let run = 0;
+  for (let m = 0; m < DAY_MIN; m++) conc[m] = run += diff[m];
+  const bucket = (arr, agg = (x, v) => x + v) => Array.from({ length: n }, (_, b) => { let x = 0; for (let m = b * res; m < Math.min((b + 1) * res, DAY_MIN); m++) x = agg(x, arr[m]); return x; });
+  const partB = Object.fromEntries(PARTS.map((k) => [k, bucket(perPart[k])]));
+  const costB = partB.read.map((_, b) => PARTS.reduce((x, k) => x + partB[k][b], 0));
+  const tokB = bucket(perTok), concB = bucket(conc, Math.max);
+  const mainB = cost ? costB : tokB, fmt = cost ? fmtUsd : fmtTok;
+  const total = mainB.reduce((x, y) => x + y, 0), peakB = mainB.indexOf(Math.max(...mainB)), peakConcM = conc.indexOf(Math.max(...conc));
+  const activeMin = conc.reduce((x, c) => x + (c > 0 ? 1 : 0), 0);
+  const range = (b) => res === 1 ? hhmm(b) : `${hhmm(b * res)}–${hhmm((b + 1) * res)}`;
+  const per = res === 1 ? 'minute' : res === 60 ? 'hour' : res + ' min';
+  const w = Math.min(1400, document.body.clientWidth);
+  // Hour ticks at their real positions (a DST day has 23 or 25 hours).
+  const tick = (h) => { const [y, mo, dd] = $('date').value.split('-').map(Number); return (new Date(y, mo - 1, dd, h).getTime() - data.from) / 60_000; };
+  const ax = `<div class="ax" style="width:${w}px">${[0, 6, 12, 18].map((h) => `<span style="left:${(100 * tick(h) / DAY_MIN).toFixed(2)}%">${String(h).padStart(2, '0')}:00</span>`).join('')}<span style="right:0">24:00</span></div>`;
+  const nMain = agents.filter((a) => !a.sub).length;
+  const costSum = PARTS.reduce((x, k) => x + partTot[k], 0);
+  const chart = cost
+    ? stackedBars(PARTS.map((k) => ({ values: partB[k], color: PART_COLORS[k] })), Math.max(...costB) || 1,
+      { w, h: 110, titles: costB.map((c, b) => c ? `${range(b)} · ${fmtUsd(c)} — ${PARTS.map((k) => `${PART_LABELS[k]} ${Math.round(100 * partB[k][b] / c)}%`).join(', ')}` : '') })
+    : barChart(tokB, { w, h: 110, color: SERIES.cost, titles: tokB.map((t, b) => `${range(b)} · ${fmtTok(t)} tokens`) });
+  const sessRows = [...bySess.values()].filter((x) => x.cost || x.tok).sort((a, b) => cost ? b.cost - a.cost : b.tok - a.tok).slice(0, 15).map((x) => {
+    const avg = x.turns ? x.ctx / x.turns : 0;
+    return [`${esc(x.title || baseName(x.cwd) || '—')} <span class="muted">${esc(baseName(x.cwd))}</span>`, fmt(cost ? x.cost : x.tok),
+      x.subCost ? fmtUsd(x.subCost) : '—', x.turns || '—', avg ? (avg >= CTX_HEAVY ? '⚠ ' : '') + fmtTok(avg) : '—', x.turns ? fmtUsd((x.mainCost || 0) / x.turns) : '—'];
+  });
+  $('out').innerHTML = `<div class="tiles">`
+    + tile(fmt(total), cost ? 'spent (API prices)' : 'tokens (' + ([...sel.tok].map((k) => TOK[k]).join(' + ') || 'none') + ')')
+    + (cost && costSum ? tile(Math.round(100 * partTot.read / costSum) + '%', 'of it re-reading context') : '')
+    + tile(fmt(mainB[peakB] || 0), `peak per ${per}${mainB[peakB] ? ' · ' + range(peakB) : ''}`)
+    + tile(String(conc[peakConcM] || 0), `peak agents at once${conc[peakConcM] ? ' · ' + hhmm(peakConcM) : ''}`)
+    + tile(`${nMain} + ${agents.length - nMain}`, 'main sessions + subagents')
+    + tile(`${Math.floor(activeMin / 60)}h ${activeMin % 60}m`, 'any agent running') + `</div>`
+    + (cost ? `<div class="lgs">${PARTS.map((k) => `<span class="lg"><i style="background:${PART_COLORS[k]}"></i>${PART_LABELS[k]} <b>${fmtUsd(partTot[k])}</b></span>`).join('')}</div>`
+      : `<div class="muted">${TOK.map((l, k) => `${l} ${fmtTok(split[k])}`).join(' · ')}</div>`)
+    + `<h3>${cost ? 'Spend' : 'Tokens'} per ${per} <span class="muted">(hover a bar)</span></h3>`
+    + `<div class="chart">${chart}</div>${ax}`
+    + `<h3>Agents running at once <span class="muted">(${res === 1 ? '' : 'max per bucket; '}running = transcript lines ≤ 5 min apart)</span></h3>`
+    + `<div class="chart">${barChart(concB, { w, h: 70, color: SERIES.activity, titles: concB.map((c, b) => `${range(b)} · ${c} agent${c === 1 ? '' : 's'}`) })}</div>${ax}`
+    + table('Sessions', ['session', cost ? 'cost' : 'tokens', 'subagents', 'turns', 'avg context', '$ / turn'], sessRows,
+      `⚠ avg context ≥ ${fmtTok(CTX_HEAVY)}: every turn re-reads it. Turns, context and $/turn are the main agent's; cost includes subagents.`)
+    + `<div class="tables">`
+    + table('By model', ['model', cost ? 'cost' : 'tokens'], [...byModel].sort((a, b) => cost ? b[1].cost - a[1].cost : b[1].tok - a[1].tok).map(([m, v]) => [esc(m), fmt(cost ? v.cost : v.tok)]))
+    + table('By project', ['project', cost ? 'cost' : 'tokens', 'main', 'subagents'], [...byProj].sort((a, b) => cost ? b[1].cost - a[1].cost : b[1].tok - a[1].tok).map(([p, v]) => [esc(baseName(p) || p), fmt(cost ? v.cost : v.tok), v.main, v.sub]))
+    + `</div>` + (agents.length ? '' : '<p class="muted">No agents match these filters on this day.</p>');
+}
+const tile = (v, l) => `<div class="tile"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`;
+const table = (title, head, rows, note = '') => `<div><h3>${title}</h3><table><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr>`
+  + rows.map((r) => `<tr>${r.map((c, i) => `<td${i ? ' class="n"' : ''}>${c}</td>`).join('')}</tr>`).join('') + `</table>`
+  + (note ? `<div class="muted" style="margin-top:4px">${esc(note)}</div>` : '') + `</div>`;
+
+// This page counts as an open board page (the server keeps holding permission prompts while one is
+// connected), so it must show them: a banner that links back to the board, where the cards are.
+(function watchPrompts() {
+  let ws; try { ws = new WebSocket(`ws://${location.host}`); } catch { return; }
+  ws.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type !== 'state') return;
+    const waiting = Object.values(msg.worlds || {}).filter((w) => w.permission);
+    const el = $('needs');
+    el.hidden = !waiting.length;
+    el.textContent = waiting.length ? `🔔 ${waiting.length} session${waiting.length === 1 ? '' : 's'} waiting for you — `
+      + waiting.map((w) => w.title || baseName(w.cwd) || 'session').join(', ') + ' → back to the board to answer' : '';
+    document.title = (waiting.length ? `(${waiting.length}) ` : '') + 'Hex-World · one day';
+  };
+  ws.onclose = () => setTimeout(watchPrompts, 3000);   // server restart → reconnect
+})();
+
+const today = new Date(), min = new Date(today.getTime() - 59 * 86_400_000);
+$('date').max = localDay(today); $('date').min = localDay(min);
+const q = new URLSearchParams(location.search).get('date');
+$('date').value = q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : localDay(today);
+$('date').onchange = load;
+$('res').onchange = render;
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+load();
+</script>

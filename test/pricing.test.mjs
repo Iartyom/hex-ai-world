@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { costOf, priceFor } from '../config/pricing.mjs';
-import { parseTranscript, newTranscriptState, feedTranscript, BUCKET_MS } from '../server/state.mjs';
+import { parseTranscript, newTranscriptState, feedTranscript } from '../server/state.mjs';
 
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≈ ${b}`);
 
@@ -34,7 +34,7 @@ test('parseTranscript: usage repeated on each content-block line is counted ONCE
   assert.equal(d.stats.costPartial, false);
 });
 
-test('unknown model → costPartial; buckets, days and active time accumulate incrementally', () => {
+test('unknown model → costPartial but its turn still counts; days and active time accumulate incrementally', () => {
   const s = newTranscriptState();
   const at = (iso, id, model = 'claude-opus-5-5') => JSON.stringify({ type: 'assistant', timestamp: iso,
     message: { id, model, usage: { output_tokens: 1e6 }, content: [{ type: 'tool_use', name: 'Bash', input: {} }] } });
@@ -45,24 +45,19 @@ test('unknown model → costPartial; buckets, days and active time accumulate in
   assert.equal(s.tools, 3);
   near(s.cost, 40);
   assert.equal(s.unpriced, 1);
-  const first = s.buckets.get(Date.parse('2026-09-01T10:00:00Z') - (Date.parse('2026-09-01T10:00:00Z') % BUCKET_MS));
-  assert.equal(first.tools, 2);
+  assert.equal(s.turns, 3, 'an unpriced model still counts as a turn (quality views need it)');
   const day = [...s.days.values()].reduce((a, d) => a + d.tools, 0);
   assert.equal(day, 3);
 });
 
-test('recentSeries + summarize: bucket placement, project rollup, session counting', async () => {
-  const { recentSeries, summarize, dayKey } = await import('../server/state.mjs');
+test('summarize: project rollup, session counting', async () => {
+  const { summarize, dayKey } = await import('../server/state.mjs');
   const s = newTranscriptState();
   const t0 = Date.parse('2026-09-01T10:00:00Z');
   const line = (ts, id) => JSON.stringify({ type: 'assistant', timestamp: new Date(ts).toISOString(), cwd: '/proj/a',
     message: { id, model: 'claude-opus-5-5', usage: { output_tokens: 1e6 }, content: [{ type: 'tool_use', name: 'Bash', input: {} }] } });
   feedTranscript(s, [line(t0, 'a'), line(t0 + 60_000, 'b')].join('\n'));
   const now = t0 + 10 * 60_000;
-  const ser = recentSeries([s], now, 24);
-  assert.equal(ser.tools.reduce((a, b) => a + b, 0), 2);
-  assert.equal(ser.tools[ser.tools.length - 1], 0, 'latest bucket empty');
-  assert.equal(ser.tools[21], 2, 'both calls land 2 buckets (10 min) back');
   const sub = newTranscriptState(); feedTranscript(sub, line(t0 + 120_000, 'c'));
   const sum = summarize([{ st: s, isSession: true }, { st: sub, isSession: false }], now, 3);
   assert.equal(sum.days.at(-1), dayKey(now));

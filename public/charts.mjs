@@ -75,3 +75,13 @@ export function fmtDur(ms) {
   const m = Math.round(ms / 60_000), h = Math.floor(m / 60);
   return h ? `${h}h ${m % 60}m` : `${m}m`;
 }
+export const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k' : String(Math.round(n || 0)));
+// Context size where a turn gets expensive: every call re-reads it, so cost per turn scales with it.
+// ponytail: one fixed threshold; per-model window sizes if a 200k-window model shows up.
+export const CTX_HEAVY = 300_000;
+// What spend paid for, stacked in this order (palette slots 1-3, validated all-pairs on #0c111b).
+// Uncached input is new context too, so it folds into `write` (it's ~0 under Claude Code's caching).
+export const PARTS = ['read', 'write', 'out'];
+export const PART_COLORS = { read: '#3987e5', write: '#d95926', out: '#199e70' };
+export const PART_LABELS = { read: 're-reading context', write: 'new context', out: 'output' };
+export const partsOf = (p) => ({ read: p.read || 0, write: (p.write || 0) + (p.in || 0), out: p.out || 0 });

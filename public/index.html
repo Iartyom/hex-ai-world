@@ -38,6 +38,9 @@
   #summary td { padding: 4px 14px 4px 0; border-bottom: 1px solid #141b27; vertical-align: middle; }
   #summary td.n { text-align: right; font-variant-numeric: tabular-nums; color: #cdd3e0; }
   #summary .muted { color: #5a6577; }
+  #summary .parts { display: flex; gap: 2px; height: 14px; width: 420px; max-width: 100%; margin-bottom: 5px; }
+  #summary .parts i:first-child { border-radius: 3px 0 0 3px; } #summary .parts i:last-child { border-radius: 0 3px 3px 0; }
+  #summary .lg b { color: #cdd3e0; font-weight: 600; }
   #summary .lg { display: inline-flex; align-items: center; gap: 5px; margin-right: 12px; color: #8b94a8; }
   #summary .lg i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
   #summary .sec { margin-top: 18px; }
@@ -114,7 +117,8 @@
 <script type="module">
   // Phase 2: render the live board with Pixi; keep the GATE-1 raw-state view behind `d`.
   import { startBoard } from './render.mjs';
-  import { barChart, stackedBars, stateLegend, STATE_COLORS, SERIES, fmtUsd, fmtDur } from './charts.mjs';
+  import { QUALITY, flagsOf } from '/config/quality.mjs';
+  import { barChart, stackedBars, stateLegend, STATE_COLORS, SERIES, PARTS, PART_COLORS, PART_LABELS, partsOf, fmtTok, CTX_HEAVY, fmtUsd, fmtDur } from './charts.mjs';
   import { esc, baseName } from './pure.mjs';
 
   const statusEl = document.getElementById('status');
@@ -141,8 +145,15 @@
   let lastWorlds = {};
   addEventListener('keydown', (e) => {
     if (e.target === filterEl) return; // don't hijack 'd' while typing in the filter box
-    if (e.key === 'd') { showDebug = !showDebug; debugEl.hidden = !showDebug; renderDebug(); if (showDebug) loadSummary(); }
+    if (e.key === 'd') setDebug(!showDebug);
   });
+  // The open panel lives in the URL (#d), so the one-day view's "← back" link and the browser's Back
+  // button return to it instead of the bare board.
+  function setDebug(on) {
+    showDebug = on; debugEl.hidden = !on; renderDebug(); if (on) loadSummary();
+    history.replaceState(null, '', on ? '#d' : location.pathname + location.search);
+  }
+  if (location.hash === '#d') setDebug(true);
   // 'd' also shows where time and money went: last 14 days across ALL transcripts (not just live
   // sessions), per day and per project. Refreshed every 30s while open.
   setInterval(() => { if (showDebug) loadSummary(); }, 30000);
@@ -157,7 +168,7 @@
     const rows = d.projects.slice(0, 20).map((p) => `<tr><td title="${esc(p.cwd)}">${esc(baseName(p.cwd) || p.cwd)}</td>`
       + `<td>${barChart(p.costByDay, { w: 140, h: 16, color: SERIES.cost, titles: p.costByDay.map((c, i) => `${label(d.days[i])} · ${fmtUsd(c)}`) })}</td>`
       + `<td class="n">${fmtUsd(p.cost)}</td><td class="n">${fmtDur(p.activeMs)}</td><td class="n">${p.tools}</td><td class="n">${p.sessions}</td></tr>`).join('');
-    summaryEl.innerHTML = `<h3>Last 14 days — all Claude Code sessions${d.costPartial ? ' <span class="muted">(some models unpriced)</span>' : ''}</h3>`
+    summaryEl.innerHTML = outcomesHtml(d, label) + `<h3 style="margin-top:18px">Last 14 days — all Claude Code sessions${d.costPartial ? ' <span class="muted">(some models unpriced)</span>' : ''} · <a href="/day.html" style="color:#7fb0ff;font-weight:400">one-day detail →</a></h3>`
       + `<div class="tiles">`
       + `<div class="tile"><div class="v">${fmtUsd(sum(d.total.cost))}</div><div class="l">API-price cost</div></div>`
       + `<div class="tile"><div class="v">${fmtUsd(d.total.cost[today])}</div><div class="l">today</div></div>`
@@ -166,8 +177,77 @@
       + `<div class="muted" style="margin-bottom:3px">cost per day (hover a bar)</div>`
       + barChart(d.total.cost, { w: 420, h: 60, color: SERIES.cost, titles, highlightLast: true })
       + `<div class="ax"><span>${label(d.days[0])}</span><span>today</span></div>`
-      + (rows ? `<table><tr><th>project</th><th>cost / day</th><th>cost</th><th>active</th><th>tools</th><th>sessions</th></tr>${rows}</table>` : '<div class="muted">no activity</div>')
+      + partsHtml(d) + sessionsHtml(d)
+      + (rows ? `<h3 style="margin-top:14px">By project</h3><table><tr><th>project</th><th>cost / day</th><th>cost</th><th>active</th><th>tools</th><th>sessions</th></tr>${rows}</table>` : '<div class="muted">no activity</div>')
       + liveHtml(d);
+  }
+  // Outcomes lead the panel: activity (tokens, cost, agents busy) doesn't predict good results; checked
+  // commits, rework and wasted runs are the signals the research backs. Each waste cause names its fix.
+  const WASTE_FIX = {
+    'blocked by a hook': 'a PreToolUse hook denied the call — check its rule for false positives (/hooks)',
+    'blocked by the auto-mode classifier': 'auto mode judged it risky; add an allow rule if it is routine (/permissions)',
+    'connector down / not logged in': 'finish the connector login or reconnect (/mcp) before the session needs it',
+    'access denied by the service (401/403)': 'the token or app install lacks access — fix once, it recurs every call',
+    'service returned an error (4xx/5xx)': 'the API itself failed or rejected the request',
+    'bad tool arguments': 'the model called a tool wrongly; recurring = the tool\'s description is unclear',
+    'edit before reading the file': 'a retry each time; a habit, not config',
+    'edit text not found / ambiguous': 'the file changed under the agent, or the snippet matched more than once',
+    'guardrail refused (index check)': 'working as intended — the query would have scanned a whole collection',
+    'command failed': 'normal while iterating; a spike means broken tooling or env',
+    'timeout': 'long-running commands — give them a background run or a narrower scope',
+    'path not found': 'wrong paths — often a stale worktree or a guessed file name',
+  };
+  function outcomesHtml(d, label) {
+    const o = d.outcomes; if (!o) return '';
+    const pct = (a, b) => (b ? Math.round(100 * a / b) + '%' : '—');
+    const wastedN = o.wasted.reduce((a, w) => a + w.count, 0);
+    const OK = STATE_COLORS.working, WARN = STATE_COLORS.blocked;
+    const dayTitles = d.days.map((day, i) => `${label(day)} · ${o.byDay.checked[i]} checked · ${o.byDay.unchecked[i]} unchecked`);
+    const full = Math.max(1, ...d.days.map((_, i) => o.byDay.checked[i] + o.byDay.unchecked[i]));
+    const when = (t) => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `<h3>Outcomes — last 14 days</h3><div class="tiles">`
+      + `<div class="tile"><div class="v">${o.commits}</div><div class="l">commits · ${o.prs} PRs</div></div>`
+      + `<div class="tile"><div class="v">${pct(o.checked, o.edited)}</div><div class="l">checked before commit (${o.checked}/${o.edited})</div></div>`
+      + `<div class="tile"><div class="v">${pct(o.rework.reworked, o.rework.files)}</div><div class="l">files reworked within 7 days</div></div>`
+      + `<div class="tile"><div class="v">${wastedN}</div><div class="l">wasted tool runs</div></div>`
+      + `<div class="tile"><div class="v">${fmtDur(o.approveMs)}</div><div class="l">you spent approving edits</div></div>`
+      + `<div class="tile"><div class="v">${o.replyMedianS == null ? '—' : o.replyMedianS < 60 ? o.replyMedianS + 's' : fmtDur(o.replyMedianS * 1000)}</div><div class="l">your median reply</div></div></div>`
+      + `<div class="muted" style="margin-bottom:3px">commits per day — checked vs ⚠ unchecked (hover)</div>`
+      + stackedBars([{ values: o.byDay.checked, color: OK }, { values: o.byDay.unchecked, color: WARN }], full, { w: 420, h: 40, titles: dayTitles })
+      + `<div class="ax"><span>${label(d.days[0])}</span><span>today</span></div>`
+      + `<div><span class="lg"><i style="background:${OK}"></i>checked (test/lint/build ran after the last edit)</span><span class="lg"><i style="background:${WARN}"></i>⚠ unchecked</span></div>`
+      + (o.unchecked.length ? `<div class="sec"><h3>⚠ Unchecked commits <span class="muted">(most recent)</span></h3><table><tr><th>when</th><th>commit</th><th>session</th></tr>`
+        + o.unchecked.map((c) => `<tr><td class="muted">${esc(when(c.ts))}</td><td>${esc(c.msg)}</td><td title="${esc(c.cwd)}">${esc(c.title || '')} <span class="muted">${esc(baseName(c.cwd))}</span></td></tr>`).join('') + `</table></div>` : '')
+      + (o.wasted.length ? `<div class="sec"><h3>Wasted tool runs — by cause</h3><table><tr><th>runs</th><th>cause</th><th>what to do</th></tr>`
+        + o.wasted.map((w) => `<tr><td class="n">${w.count}</td><td>${esc(w.cause)}</td><td class="muted">${esc(WASTE_FIX[w.cause] || '')}</td></tr>`).join('') + `</table></div>` : '');
+  }
+  // What the spend paid for — one 100% bar, direct-labelled. Usually it's re-reading context, not
+  // answers: that's the case for keeping contexts small, so it leads the panel.
+  function partsHtml(d) {
+    if (!d.parts) return '';
+    const p = partsOf(d.parts), tot = PARTS.reduce((a, k) => a + p[k], 0);
+    if (!tot) return '';
+    const seg = PARTS.filter((k) => p[k] / tot >= 0.005).map((k) => `<i style="flex:${p[k]};background:${PART_COLORS[k]}" title="${PART_LABELS[k]} · ${fmtUsd(p[k])}"></i>`).join('');
+    const lab = PARTS.map((k) => `<span class="lg"><i style="background:${PART_COLORS[k]}"></i>${PART_LABELS[k]} <b>${Math.round(100 * p[k] / tot)}%</b> ${fmtUsd(p[k])}</span>`).join('');
+    return `<div class="sec"><h3>What the money paid for</h3><div class="parts">${seg}</div><div>${lab}</div></div>`;
+  }
+  // Sessions ranked by how many of Anthropic's best-practice quality flags they trip (kitchen-sink
+  // sessions, repeated corrections, heavy compaction, unchecked edits left at the end), then by size.
+  function sessionsHtml(d) {
+    if (!d.sessions || !d.sessions.length) return '';
+    const warn = (on, v) => (on ? `⚠ ${v}` : v);
+    const rows = d.sessions.map((x) => { const on = flagsOf(x);                      // already ranked by the server
+      return `<tr><td title="${esc(x.cwd)}">${esc(x.title || baseName(x.cwd) || (x.sid || '').slice(0, 8))} <span class="muted">${esc(baseName(x.cwd))}</span></td>`
+        + `<td class="n">${x.turns}</td><td class="n">${x.avgCtx >= CTX_HEAVY ? 'large · ' : ''}${fmtTok(x.avgCtx)}</td>`
+        + `<td class="n">${warn(on.branches, x.branches ?? '—')}</td><td class="n">${warn(on.compactions, x.compactions ?? '—')}</td>`
+        + `<td class="n">${warn(on.corrections, x.corrections ?? '—')}</td><td class="n">${x.uncheckedEdits ? warn(on.uncheckedEdits, x.uncheckedEdits) : '✓'}</td></tr>`; }).join('');
+    return `<div class="sec"><h3>Sessions — quality flags</h3>`
+      + `<table><tr><th>session</th><th>turns</th><th>avg context</th><th>branches</th><th>compactions</th><th>corrections</th><th>unchecked edits</th></tr>${rows}</table>`
+      + `<div class="muted" style="margin-top:4px;line-height:1.6">What the ⚠ means and what to do (from Claude Code's best practices):<br>`
+      + `branches ≥ ${QUALITY.branches} — unrelated tasks mixed in one context → /clear or a new session between tasks<br>`
+      + `corrections ≥ ${QUALITY.corrections} — context full of failed attempts → /clear and restate the task with what you learned<br>`
+      + `compactions ≥ ${QUALITY.compactions} — earlier work kept only as summaries → start a fresh session for new work<br>`
+      + `unchecked edits ≥ ${QUALITY.uncheckedEdits} — changes not verified → tell it “run the tests and lint for what you changed, and fix any failures”</div></div>`;
   }
   // Live sessions, last 2h: what each agent spent its time doing (server-sampled every 2s), and the
   // headline "time agents sat waiting on you" — blocked on a prompt/question you hadn't answered.
@@ -309,7 +389,7 @@
       card.classList.toggle('below', below);
       card.style.setProperty('--tail', a ? `${Math.min(Math.max(14, a.x - x), w - 14)}px` : '-99px');
       const txt = st.until ? `terminal asks in ${Math.max(0, Math.ceil((st.until - Date.now()) / 1000))}s` : 'waits for your answer';
-      const note = card.querySelector('.note');
+      const note = card.querySelector('.foot .note');   // not the question's "(pick any)" label
       if (note && note.textContent !== txt) note.textContent = txt;
     }
     requestAnimationFrame(placeCards);
